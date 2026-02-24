@@ -1,0 +1,7 @@
+# SAT Declaration Filler — Python 3.10+
+# Install: pip install -r requirements.txt
+# Then: playwright install chromium
+
+openpyxl>=3.1.0
+playwright>=1.40.0
+pyodbc>=5.0.0

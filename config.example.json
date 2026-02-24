@@ -1,0 +1,7 @@
+{
+  "db_connection_string": "DRIVER={ODBC Driver 17 for SQL Server};SERVER=your_server;DATABASE=your_db;UID=user;PWD=password",
+  "fiel_certificate_base_path": "C:\\Path\\To\\FielCertificate",
+  "sat_portal_url": "https://ptscdecprov.clouda.sat.gob.mx/",
+  "totals_tolerance_pesos": 1,
+  "log_file": "sat_declaration_filler.log"
+}
