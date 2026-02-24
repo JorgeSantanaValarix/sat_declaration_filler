@@ -9,36 +9,68 @@ See **PLAN_FORM_FILL_AUTOMATION.md** for the full plan and flow.
 - **Python 3.10+** (3.10 or 3.11 recommended)
 - Windows (SAT portal and Contaayuda DB are typically on Windows)
 
-## Setup
+## How to run
 
-1. **Install dependencies**
+### First-time setup
+
+1. **Open a terminal** in the project folder (e.g. `D:\GitHub\sat_declaration_filler`).
+
+2. **Create and activate a virtual environment** (optional but recommended):
+
+   ```bash
+   python -m venv .venv
+   .venv\Scripts\activate
+   ```
+
+3. **Install dependencies:**
 
    ```bash
    pip install -r requirements.txt
    playwright install chromium
    ```
 
-2. **Config**
+4. **Create config:** copy `config.example.json` to `config.json` and set your database connection and FIEL certificate path:
 
-   Copy `config.example.json` to `config.json` and set:
+   ```bash
+   copy config.example.json config.json
+   ```
+   Then edit `config.json`: set **db_connection_string** and **fiel_certificate_base_path**.
 
-   - **db_connection_string** — ODBC connection string to the Contaayuda database (SQL Server).
-   - **fiel_certificate_base_path** — Base path where .cer/.key files are stored (e.g. `C:\FielCertificate`). The script appends `CompanyId/BranchId/` and the filename from the DB.
-   - Optionally: **sat_portal_url**, **totals_tolerance_pesos** (default 1), **log_file**.
+5. **(Optional)** Update `form_field_mapping.json` with real SAT selectors after inspecting the portal (see “Finding selectors” below).
 
-3. **Field mapping**
+### Run the script
 
-   `form_field_mapping.json` maps Excel labels (and login/nav keys) to Playwright selectors. **You must update the selectors** after inspecting the live SAT pages (see below). The file includes placeholder selectors to get started.
-
-## Usage
-
-One workbook path and company/branch IDs (for e.firma lookup):
+From the project folder (with the same venv active if you use one):
 
 ```bash
 python sat_declaration_filler.py --workbook "C:\path\to\202501_RFC_Hoja de Trabajo.xlsx" --company-id 1 --branch-id 2
 ```
 
-Options:
+- Replace the path with the **full path** to your Excel workpaper (Impuestos tab).
+- Use the **company ID** and **branch ID** that correspond to the taxpayer in Contaayuda (used to fetch e.firma from the DB).
+
+**Short form:**
+
+```bash
+python sat_declaration_filler.py -w "C:\path\to\workpaper.xlsx" -c 1 -b 2
+```
+
+**With custom config or mapping file:**
+
+```bash
+python sat_declaration_filler.py --workbook "C:\path\to\workpaper.xlsx" --company-id 1 --branch-id 2 --config C:\other\config.json --mapping C:\other\form_field_mapping.json
+```
+
+- **Exit code 0** — declaration was sent (or send was triggered).
+- **Exit code 1** — error or totals mismatch; check console output and `sat_declaration_filler.log`.
+
+## Setup (reference)
+
+1. **Dependencies:** `pip install -r requirements.txt` then `playwright install chromium`.
+2. **Config:** Copy `config.example.json` to `config.json` and set **db_connection_string** and **fiel_certificate_base_path** (and optionally **sat_portal_url**, **totals_tolerance_pesos**, **log_file**).
+3. **Field mapping:** Update selectors in `form_field_mapping.json` when the SAT form changes (see “Finding selectors” below).
+
+## Usage (CLI options)
 
 - `--workbook`, `-w` — Full path to the .xlsx workpaper (required).
 - `--company-id`, `-c` — Company ID for e.firma (required).
