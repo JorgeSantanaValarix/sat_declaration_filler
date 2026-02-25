@@ -16,3 +16,6 @@ env/
 .vscode/
 *.swp
 *.swo
+
+#Testing
+Testing/

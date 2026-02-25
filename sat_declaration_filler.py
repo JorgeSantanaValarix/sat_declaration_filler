@@ -13,6 +13,8 @@ import logging
 import os
 import re
 import sys
+import time
+from datetime import datetime
 from pathlib import Path
 
 import openpyxl
@@ -202,11 +204,20 @@ def _try_fill(page, mapping: dict, key: str, value: str | float, *, is_file: boo
         return False
     for sel in selectors:
         try:
+            # SAT e.firma: two input[type='file'] with no name/accept; first=cer, second=key.
+            if is_file and sel == "input[type='file']" and key in ("_login_cer_file_input", "_login_key_file_input"):
+                loc = page.locator(sel)
+                if loc.count() < 2 and key == "_login_key_file_input":
+                    continue
+                target = loc.first if key == "_login_cer_file_input" else loc.nth(1)
+                target.wait_for(state="attached", timeout=1000)
+                target.set_input_files(value)
+                return True
             loc = page.locator(sel)
             if loc.count() == 0:
                 continue
             first = loc.first
-            first.wait_for(state="visible", timeout=3000)
+            first.wait_for(state="visible", timeout=1000)
             if is_file:
                 first.set_input_files(value)  # value = path
             else:
@@ -227,7 +238,7 @@ def _try_click(page, mapping: dict, key: str) -> bool:
             if loc.count() == 0:
                 continue
             first = loc.first
-            first.wait_for(state="visible", timeout=5000)
+            first.wait_for(state="visible", timeout=1000)
             first.click()
             return True
         except Exception:
@@ -237,31 +248,87 @@ def _try_click(page, mapping: dict, key: str) -> bool:
 
 def login_sat(page, efirma: dict, mapping: dict, base_url: str = SAT_PORTAL_URL) -> None:
     """Open SAT portal, click e.firma, fill .cer, .key, password, Enviar."""
-    page.goto(base_url, wait_until="networkidle", timeout=60000)
+    t0 = time.perf_counter()
+
+    def _ts() -> str:
+        now = datetime.now()
+        return now.strftime("%Y-%m-%d %H:%M:%S") + f",{now.microsecond // 1000:03d}"
+
+    def _elapsed() -> float:
+        return round(time.perf_counter() - t0, 2)
+
+    # Use 'load' so we don't timeout: SAT page often never reaches networkidle (long-lived connections).
+    page.goto(base_url, wait_until="load", timeout=60000)
     page.wait_for_load_state("domcontentloaded")
+    print(f"{_ts()} [{_elapsed()}s] SAT page loaded, looking for e.firma button")
 
     if not _try_click(page, mapping, "_login_e_firma_button"):
         raise RuntimeError("Could not find e.firma button on SAT login page")
-    page.wait_for_url(re.compile(r".*id=fiel.*", re.I), timeout=15000)
-
-    # File inputs: SAT often has two separate file inputs (cert and key)
+    print(f"{_ts()} [{_elapsed()}s] e.firma pressed")
+    # Wait for e.firma form to be ready (short timeouts; max ~1s extra delay).
+    try:
+        page.wait_for_url(re.compile(r".*id=fiel.*", re.I), timeout=500)
+    except Exception:
+        pass
+    try:
+        page.locator("input[type='file'], input[type='password']").first.wait_for(state="visible", timeout=1000)
+    except Exception:
+        pass
+    # Set cer, key, password with no extra delay (target ~1s total).
     cer_input_ok = _try_fill(page, mapping, "_login_cer_file_input", efirma["cer_path"], is_file=True)
+    if cer_input_ok:
+        print(f"{_ts()} [{_elapsed()}s] filled .cer: {os.path.basename(efirma['cer_path'])}")
     key_input_ok = _try_fill(page, mapping, "_login_key_file_input", efirma["key_path"], is_file=True)
+    if key_input_ok:
+        print(f"{_ts()} [{_elapsed()}s] filled .key: {os.path.basename(efirma['key_path'])}")
     if not cer_input_ok or not key_input_ok:
-        LOG.warning("One or both file inputs not found by selector; trying generic file inputs")
+        LOG.warning("One or both file inputs not found by selector; using generic input[type='file'] order (first=cer, second=key)")
         inputs = page.locator("input[type='file']").all()
         if len(inputs) >= 2:
             inputs[0].set_input_files(efirma["cer_path"])
             inputs[1].set_input_files(efirma["key_path"])
+            print(f"{_ts()} [{_elapsed()}s] filled .cer (fallback): {os.path.basename(efirma['cer_path'])}")
+            print(f"{_ts()} [{_elapsed()}s] filled .key (fallback): {os.path.basename(efirma['key_path'])}")
         elif len(inputs) == 1:
             inputs[0].set_input_files(efirma["cer_path"])
+            print(f"{_ts()} [{_elapsed()}s] filled .cer (fallback): {os.path.basename(efirma['cer_path'])}")
             LOG.warning("Only one file input found; key may need manual selection")
 
     _try_fill(page, mapping, "_login_password_input", efirma["password"])
-    if efirma.get("rfc"):
-        _try_fill(page, mapping, "_login_rfc_input", efirma["rfc"])
+    print(f"{_ts()} [{_elapsed()}s] filled password: ***")
+    # RFC is not filled: SAT typically derives it from the .cer; filling it can cause long delays.
+    page.wait_for_timeout(1000)
+    print(f"{_ts()} [{_elapsed()}s] pressing Enviar")
+    # Click Enviar: try mapping first, then fallbacks (SAT markup varies; Enviar can be button or input).
     if not _try_click(page, mapping, "_login_enviar_button"):
-        raise RuntimeError("Could not find Enviar button on e.firma form")
+        enviar_clicked = False
+        for try_fn in [
+            lambda: page.get_by_role("button", name=re.compile(r"Enviar", re.I)).first.click(timeout=3000),
+            lambda: page.locator("button").filter(has_text=re.compile(r"Enviar", re.I)).first.click(timeout=3000),
+            lambda: page.locator("input[type='submit'][value='Enviar']").first.click(timeout=3000),
+            lambda: page.locator("input[type='submit'][value*='Enviar']").first.click(timeout=3000),
+        ]:
+            try:
+                try_fn()
+                enviar_clicked = True
+                LOG.info("Clicked Enviar via fallback")
+                print(f"{_ts()} [{_elapsed()}s] Enviar pressed (fallback)")
+                break
+            except Exception:
+                continue
+        if not enviar_clicked:
+            # Last resort: second submit button (first is often "Contraseña")
+            try:
+                page.locator("input[type='submit'], button[type='submit']").nth(1).click(timeout=3000)
+                enviar_clicked = True
+                LOG.info("Clicked Enviar via nth(1) submit")
+                print(f"{_ts()} [{_elapsed()}s] Enviar pressed (nth(1))")
+            except Exception:
+                pass
+        if not enviar_clicked:
+            raise RuntimeError("Could not find Enviar button on e.firma form")
+    else:
+        print(f"{_ts()} [{_elapsed()}s] Enviar pressed")
     page.wait_for_load_state("domcontentloaded")
     # Wait for redirect after login (e.g. to portal home)
     page.wait_for_timeout(3000)
@@ -358,21 +425,77 @@ def send_declaration(page, mapping: dict) -> bool:
     return _try_click(page, mapping, "_btn_enviar_declaracion")
 
 
+def get_efirma_from_config(config: dict) -> dict:
+    """
+    Get e.firma from config (test mode: local .cer/.key paths and password, no DB).
+    Accepts either root keys (test_cer_path, test_key_path, test_password) or nested config["test"] (cer_path, key_path, password).
+    """
+    t = config.get("test") or {}
+    cer = config.get("test_cer_path") or t.get("cer_path") or ""
+    key = config.get("test_key_path") or t.get("key_path") or ""
+    pwd = config.get("test_password") or t.get("password") or ""
+    rfc = config.get("test_rfc") or t.get("rfc") or ""
+    if not cer or not key:
+        raise ValueError(
+            "Test mode requires test_cer_path and test_key_path in config.json (or test.cer_path, test.key_path). "
+            "Add test_password (or test.password) for e.firma."
+        )
+    cer_path = os.path.abspath(cer)
+    key_path = os.path.abspath(key)
+    if not os.path.isfile(cer_path):
+        raise FileNotFoundError(f"test cer path not found: {cer_path}")
+    if not os.path.isfile(key_path):
+        raise FileNotFoundError(f"test key path not found: {key_path}")
+    return {
+        "cer_path": cer_path,
+        "key_path": key_path,
+        "password": pwd,
+        "rfc": rfc,
+    }
+
+
 def run(
-    workbook_path: str,
-    company_id: int,
-    branch_id: int,
+    workbook_path: str | None = None,
+    company_id: int | None = None,
+    branch_id: int | None = None,
     config_path: str | None = None,
     mapping_path: str | None = None,
+    test_login: bool = False,
 ) -> bool:
     """
     Full flow: read Excel → get e.firma → login SAT → navigate → fill initial → fill ISR → fill IVA → check totals → send.
-    Returns True if declaration was sent, False otherwise. Logs and prints outcome.
+    If test_login=True: only open SAT and perform e.firma login (no DB; use test_* in config). Returns True if login succeeded.
+    Returns True if declaration was sent (or test step OK), False otherwise. Logs and prints outcome.
     """
     config = load_config(config_path)
     mapping = load_mapping(mapping_path)
     setup_logging(config.get("log_file"))
 
+    base_url = config.get("sat_portal_url", SAT_PORTAL_URL)
+
+    if test_login:
+        LOG.info("Test mode: login only (no DB, using test_cer_path / test_key_path / test_password from config)")
+        efirma = get_efirma_from_config(config)
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=False)
+            context = browser.new_context(accept_downloads=True)
+            page = context.new_page()
+            try:
+                login_sat(page, efirma, mapping, base_url)
+                LOG.info("Test login: e.firma login completed. Browser will stay open 10s for inspection.")
+                page.wait_for_timeout(10000)
+                return True
+            except Exception as e:
+                LOG.exception("Test login failed")
+                print(str(e), file=sys.stderr)
+                return False
+            finally:
+                context.close()
+                browser.close()
+
+    # Normal flow
+    if not workbook_path or company_id is None or branch_id is None:
+        raise ValueError("Normal run requires --workbook, --company-id, --branch-id")
     LOG.info("Reading workbook: %s", workbook_path)
     data = read_impuestos(workbook_path)
     label_map = data["label_map"]
@@ -381,7 +504,6 @@ def run(
     LOG.info("Fetching e.firma from DB for company=%s branch=%s", company_id, branch_id)
     efirma = get_efirma_from_db(company_id, branch_id, config)
     tolerance = config.get("totals_tolerance_pesos", TOLERANCE_PESOS)
-    base_url = config.get("sat_portal_url", SAT_PORTAL_URL)
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=False)  # headless=False so user can see; set True for automation
@@ -453,13 +575,28 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Fill SAT provisional declaration from Contaayuda Excel workpaper (Impuestos tab)."
     )
-    parser.add_argument("--workbook", "-w", required=True, help="Full path to the .xlsx workpaper")
-    parser.add_argument("--company-id", "-c", type=int, required=True, help="Company ID for e.firma lookup")
-    parser.add_argument("--branch-id", "-b", type=int, required=True, help="Branch ID for e.firma lookup")
+    parser.add_argument("--workbook", "-w", help="Full path to the .xlsx workpaper (required unless --test-login)")
+    parser.add_argument("--company-id", "-c", type=int, help="Company ID for e.firma lookup (required unless --test-login)")
+    parser.add_argument("--branch-id", "-b", type=int, help="Branch ID for e.firma lookup (required unless --test-login)")
     parser.add_argument("--config", help="Path to config.json (default: script dir/config.json)")
     parser.add_argument("--mapping", help="Path to form_field_mapping.json (default: script dir)")
+    parser.add_argument("--test-login", action="store_true", help="Test only: open SAT and log in with local .cer/.key and password from config (no DB)")
     args = parser.parse_args()
 
+    if args.test_login:
+        success = run(
+            workbook_path=None,
+            company_id=None,
+            branch_id=None,
+            config_path=args.config,
+            mapping_path=args.mapping,
+            test_login=True,
+        )
+        sys.exit(0 if success else 1)
+
+    if not args.workbook or args.company_id is None or args.branch_id is None:
+        print("Error: --workbook, --company-id, and --branch-id are required unless --test-login.", file=sys.stderr)
+        sys.exit(2)
     if not os.path.isfile(args.workbook):
         print(f"Error: Workbook not found: {args.workbook}", file=sys.stderr)
         sys.exit(2)
@@ -469,6 +606,7 @@ def main() -> None:
         branch_id=args.branch_id,
         config_path=args.config,
         mapping_path=args.mapping,
+        test_login=False,
     )
     sys.exit(0 if success else 1)
 
