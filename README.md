@@ -22,8 +22,11 @@ See **PLAN_FORM_FILL_AUTOMATION.md** for the full plan and flow.
    .venv\Scripts\activate
    ```
 
-3. **Install dependencies:**
+3. **Install dependencies** — either run the batch file or the commands manually:
 
+   **Option A (Windows):** Double-click `setup.bat` in the project folder. It checks for Python and runs `pip install -r requirements.txt` and `playwright install chromium`.
+
+   **Option B (manual):**
    ```bash
    pip install -r requirements.txt
    playwright install chromium
@@ -64,10 +67,73 @@ python sat_declaration_filler.py --workbook "C:\path\to\workpaper.xlsx" --compan
 - **Exit code 0** — declaration was sent (or send was triggered).
 - **Exit code 1** — error or totals mismatch; check console output and `sat_declaration_filler.log`.
 
+## Database configuration (SQL Server on Windows)
+
+**Yes — you must configure the DB.** The script connects to the Contaayuda Microsoft SQL Server database to read e.firma data (certificate filename, key filename, password) via the stored procedure `[GET_AUTOMATICTAXDECLARATION_CUSTOMERDATA]`.
+
+### Where to set it
+
+- **File:** `config.json` in the project folder (`D:\GitHub\sat_declaration_filler\`).
+- **Key:** `db_connection_string`.
+
+If `config.json` does not exist, copy it from `config.example.json` and then edit it.
+
+### How to set the connection string
+
+1. **ODBC driver:** On the same Windows PC where you run the script, you need an **ODBC Driver for SQL Server**. Common names:
+   - `ODBC Driver 17 for SQL Server`
+   - `ODBC Driver 18 for SQL Server`
+   - `SQL Server`
+
+   To see installed drivers: **Windows key** → type **ODBC** → open **ODBC Data Sources (64-bit)** → tab **Drivers**. If none of the above is listed, install [Microsoft ODBC Driver for SQL Server](https://learn.microsoft.com/en-us/sql/connect/odbc/download-odbc-driver-for-sql-server).
+
+2. **Build the connection string** using your SQL Server details:
+
+   - **Server:** hostname or IP of the PC where SQL Server runs (e.g. `localhost`, `.\SQLEXPRESS`, `192.168.1.10`, or `SERVERNAME`).
+   - **Database:** name of the Contaayuda database.
+   - **User / password:** a SQL login that has permission to execute `[GET_AUTOMATICTAXDECLARATION_CUSTOMERDATA]` (usually the same credentials Contaayuda uses).
+
+   **Example (Windows authentication):**
+
+   ```json
+   "db_connection_string": "DRIVER={ODBC Driver 17 for SQL Server};SERVER=localhost;DATABASE=ContaayudaDb;Trusted_Connection=yes;"
+   ```
+
+   **Example (SQL login and password):**
+
+   ```json
+   "db_connection_string": "DRIVER={ODBC Driver 17 for SQL Server};SERVER=localhost;DATABASE=ContaayudaDb;UID=YourSqlUser;PWD=YourSqlPassword;"
+   ```
+
+   Use the exact **DRIVER** name as shown in ODBC Data Sources. In the JSON file, keep the string on one line and escape any backslashes or quotes if needed.
+
+3. **Put it in `config.json`:**
+
+   ```json
+   {
+     "db_connection_string": "DRIVER={ODBC Driver 17 for SQL Server};SERVER=your_server;DATABASE=your_db;UID=user;PWD=password",
+     "fiel_certificate_base_path": "C:\\Path\\To\\FielCertificate",
+     "sat_portal_url": "https://ptscdecprov.clouda.sat.gob.mx/",
+     "totals_tolerance_pesos": 1,
+     "log_file": "sat_declaration_filler.log"
+   }
+   ```
+
+   Replace `your_server`, `your_db`, `user`, and `password` with your real values. Do **not** commit `config.json` to git (it is in `.gitignore`); it stays only on your PC.
+
+### Summary
+
+| What            | Where / how                                                                 |
+|---------------------------------------------------------------------------------|
+| Config file     | `D:\GitHub\sat_declaration_filler\config.json` (copy from `config.example.json`) |
+| DB key          | `db_connection_string` inside `config.json`                                  |
+| Format          | ODBC connection string for SQL Server (see examples above)                    |
+| Same machine?  | Script and SQL Server can be on the same Windows PC or different; use SERVER= accordingly. |
+
 ## Setup (reference)
 
 1. **Dependencies:** `pip install -r requirements.txt` then `playwright install chromium`.
-2. **Config:** Copy `config.example.json` to `config.json` and set **db_connection_string** and **fiel_certificate_base_path** (and optionally **sat_portal_url**, **totals_tolerance_pesos**, **log_file**).
+2. **Config:** Copy `config.example.json` to `config.json` and set **db_connection_string** and **fiel_certificate_base_path** (and optionally **sat_portal_url**, **totals_tolerance_pesos**, **log_file**). See **Database configuration** above.
 3. **Field mapping:** Update selectors in `form_field_mapping.json` when the SAT form changes (see “Finding selectors” below).
 
 ## Usage (CLI options)
