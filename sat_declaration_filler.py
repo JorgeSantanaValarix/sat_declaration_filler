@@ -228,6 +228,41 @@ def _try_fill(page, mapping: dict, key: str, value: str | float, *, is_file: boo
     return False
 
 
+# Phrases that indicate SAT portal error (page down, 500, maintenance). Checked case-insensitive.
+_SAT_ERROR_PHRASES = (
+    "500",
+    "internal server error",
+    "error del servidor",
+    "servidor no disponible",
+    "no disponible",
+    "service unavailable",
+    "unavailable",
+    "error http",
+    "mantenimiento",
+    "maintenance",
+    "try again later",
+    "intente más tarde",
+)
+
+
+def _check_sat_page_error(page, *, response_status: int | None = None) -> str | None:
+    """
+    Check if the current page shows an SAT error (500, down, maintenance).
+    Returns an error message to raise if an issue is detected, None otherwise.
+    """
+    if response_status is not None and response_status >= 400:
+        return f"SAT returned HTTP {response_status}"
+    try:
+        body = page.locator("body").inner_text(timeout=3000) or ""
+        text = body.lower()
+        for phrase in _SAT_ERROR_PHRASES:
+            if phrase in text:
+                return f"SAT page shows error: found '{phrase}' on page"
+    except Exception as e:
+        LOG.debug("Could not read page body for error check: %s", e)
+    return None
+
+
 def _try_click(page, mapping: dict, key: str) -> bool:
     selectors = mapping.get(key)
     if not selectors:
@@ -258,8 +293,13 @@ def login_sat(page, efirma: dict, mapping: dict, base_url: str = SAT_PORTAL_URL)
         return round(time.perf_counter() - t0, 2)
 
     # Use 'load' so we don't timeout: SAT page often never reaches networkidle (long-lived connections).
-    page.goto(base_url, wait_until="load", timeout=60000)
+    response = page.goto(base_url, wait_until="load", timeout=60000)
     page.wait_for_load_state("domcontentloaded")
+    err = _check_sat_page_error(page, response_status=response.status if response else None)
+    if err:
+        LOG.error("SAT issue on load: %s", err)
+        print(err, file=sys.stderr)
+        raise RuntimeError(err)
     print(f"{_ts()} [{_elapsed()}s] SAT page loaded, looking for e.firma button")
 
     if not _try_click(page, mapping, "_login_e_firma_button"):
@@ -332,6 +372,11 @@ def login_sat(page, efirma: dict, mapping: dict, base_url: str = SAT_PORTAL_URL)
     page.wait_for_load_state("domcontentloaded")
     # Wait for redirect after login (e.g. to portal home)
     page.wait_for_timeout(3000)
+    err = _check_sat_page_error(page)
+    if err:
+        LOG.error("SAT issue after login: %s", err)
+        print(err, file=sys.stderr)
+        raise RuntimeError(err)
 
 
 def navigate_to_declaration(page, mapping: dict) -> None:
