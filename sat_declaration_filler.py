@@ -24,7 +24,7 @@ try:
 except ImportError:
     pyodbc = None
 
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import Frame, Page, sync_playwright
 
 # --- Constants from plan ---
 IMPUESTOS_SHEET = "Impuestos"
@@ -102,12 +102,18 @@ def read_impuestos(workbook_path: str) -> dict:
     if isinstance(periodicidad, str):
         periodicidad = 1
 
+    tipo_declaracion = "Normal"
+    periodo_str = f"{month:02d}" if month is not None else "(none)"
+    print(
+        f"{_debug_ts()} [Excel] initial form data to fill: Ejercicio={year}, Periodicidad={periodicidad}, "
+        f"Período={periodo_str}, Tipo={tipo_declaracion} (year/month from filename YYYYMM_; periodicidad from sheet)"
+    )
     return {
         "label_map": label_map,
         "year": year,
         "month": month,
         "periodicidad": periodicidad,
-        "tipo_declaracion": "Normal",
+        "tipo_declaracion": tipo_declaracion,
     }
 
 
@@ -197,31 +203,98 @@ def setup_logging(log_file: str | None) -> None:
     LOG.info("Log file: %s", log_path)
 
 
-def _try_fill(page, mapping: dict, key: str, value: str | float, *, is_file: bool = False) -> bool:
-    """Try selectors for key; fill first that exists. For file inputs use set_input_files."""
+# Short timeout for selector tries so we don't wait 30s per selector (Playwright default).
+_FILL_SELECTOR_TIMEOUT_MS = 800
+# Declaration form dropdowns: give first selectors time to find by exact ID (page may still be settling).
+_INITIAL_FORM_SELECTOR_TIMEOUT_MS = 6000
+
+# SAT Periodicidad dropdown: option labels shown in UI → we use value= for select_option.
+# Options: 1-Mensual, 3-Trimestral, 4-Cuatrimestral, 5-Semestral (A), 6-Semestral (B) Liquidación,
+#          7-Ajuste, 8-Del Ejercicio, 9-Sin Periodo.
+_SAT_PERIODICIDAD_VALUE = {
+    1: "M",   # 1-Mensual
+    3: "T",   # 3-Trimestral
+    4: "Q",   # 4-Cuatrimestral
+    5: "S",   # 5-Semestral (A)
+    6: "L",   # 6-Semestral (B) Liquidación
+    7: "J",   # 7-Ajuste
+    8: "Y",   # 8-Del Ejercicio
+    9: "N",   # 9-Sin Periodo
+}
+
+# SAT Ejercicio dropdown: options are years 2002–2026 (we pass str(year), e.g. "2026").
+
+# SAT Período dropdown: options are months Enero–Diciembre (labels in Spanish). We pass label for select_option.
+_SAT_PERIODO_LABEL = {
+    1: "Enero", 2: "Febrero", 3: "Marzo", 4: "Abril", 5: "Mayo", 6: "Junio",
+    7: "Julio", 8: "Agosto", 9: "Septiembre", 10: "Octubre", 11: "Noviembre", 12: "Diciembre",
+}
+
+
+def _try_fill(scope: Page | Frame, page_for_wait: Page, mapping: dict, key: str, value: str | float, *, is_file: bool = False) -> bool:
+    """Try selectors for key; fill first that exists. scope = page or frame where elements live; page_for_wait for timeouts."""
     selectors = mapping.get(key)
     if not selectors:
         return False
+    # Login: default timeout. Initial form: longer timeout so exact-ID selectors can find elements. Others: short.
+    if key.startswith("_login_"):
+        timeout_ms = None  # default
+    elif key.startswith("initial_"):
+        timeout_ms = _INITIAL_FORM_SELECTOR_TIMEOUT_MS
+    else:
+        timeout_ms = _FILL_SELECTOR_TIMEOUT_MS
+    value_str = str(value)
     for sel in selectors:
         try:
             # SAT e.firma: two input[type='file'] with no name/accept; first=cer, second=key.
             if is_file and sel == "input[type='file']" and key in ("_login_cer_file_input", "_login_key_file_input"):
-                loc = page.locator(sel)
+                loc = scope.locator(sel)
                 if loc.count() < 2 and key == "_login_key_file_input":
                     continue
                 target = loc.first if key == "_login_cer_file_input" else loc.nth(1)
                 target.wait_for(state="attached", timeout=1000)
                 target.set_input_files(value)
                 return True
-            loc = page.locator(sel)
+            # Label-based: find control by its visible label (works for dropdowns and inputs).
+            if sel.startswith("label="):
+                label_text = sel[6:].strip()
+                loc = scope.get_by_label(label_text, exact=False)
+                if loc.count() == 0:
+                    continue
+                first = loc.first
+                first.wait_for(state="visible", timeout=500)
+                if is_file:
+                    first.set_input_files(value)
+                else:
+                    tag = first.evaluate("el => el.tagName.toLowerCase()")
+                    if tag == "select":
+                        try:
+                            first.select_option(value=value_str)
+                        except Exception:
+                            first.select_option(label=value_str)
+                    else:
+                        first.click()
+                        page_for_wait.wait_for_timeout(300)
+                        first.fill(value_str)
+                return True
+            loc = scope.locator(sel)
             if loc.count() == 0:
                 continue
             first = loc.first
-            first.wait_for(state="visible", timeout=1000)
+            first.wait_for(state="visible", timeout=500)
             if is_file:
-                first.set_input_files(value)  # value = path
+                first.set_input_files(value)
             else:
-                first.fill(str(value))
+                tag = first.evaluate("el => el.tagName.toLowerCase()")
+                if tag == "select":
+                    try:
+                        first.select_option(value=value_str)
+                    except Exception:
+                        first.select_option(label=value_str)
+                else:
+                    first.click()
+                    page_for_wait.wait_for_timeout(300)
+                    first.fill(value_str)
             return True
         except Exception:
             continue
@@ -315,10 +388,10 @@ def login_sat(page, efirma: dict, mapping: dict, base_url: str = SAT_PORTAL_URL)
     except Exception:
         pass
     # Set cer, key, password with no extra delay (target ~1s total).
-    cer_input_ok = _try_fill(page, mapping, "_login_cer_file_input", efirma["cer_path"], is_file=True)
+    cer_input_ok = _try_fill(page, page, mapping, "_login_cer_file_input", efirma["cer_path"], is_file=True)
     if cer_input_ok:
         print(f"{_ts()} [{_elapsed()}s] filled .cer: {os.path.basename(efirma['cer_path'])}")
-    key_input_ok = _try_fill(page, mapping, "_login_key_file_input", efirma["key_path"], is_file=True)
+    key_input_ok = _try_fill(page, page, mapping, "_login_key_file_input", efirma["key_path"], is_file=True)
     if key_input_ok:
         print(f"{_ts()} [{_elapsed()}s] filled .key: {os.path.basename(efirma['key_path'])}")
     if not cer_input_ok or not key_input_ok:
@@ -334,8 +407,12 @@ def login_sat(page, efirma: dict, mapping: dict, base_url: str = SAT_PORTAL_URL)
             print(f"{_ts()} [{_elapsed()}s] filled .cer (fallback): {os.path.basename(efirma['cer_path'])}")
             LOG.warning("Only one file input found; key may need manual selection")
 
-    _try_fill(page, mapping, "_login_password_input", efirma["password"])
-    print(f"{_ts()} [{_elapsed()}s] filled password: ***")
+    pwd_ok = _try_fill(page, page, mapping, "_login_password_input", efirma["password"])
+    if pwd_ok:
+        print(f"{_ts()} [{_elapsed()}s] filled password: ***")
+    else:
+        LOG.warning("Password field not filled — check selectors")
+        print(f"{_ts()} [{_elapsed()}s] password NOT filled (check selectors)")
     # RFC is not filled: SAT typically derives it from the .cer; filling it can cause long delays.
     page.wait_for_timeout(1000)
     print(f"{_ts()} [{_elapsed()}s] pressing Enviar")
@@ -370,8 +447,23 @@ def login_sat(page, efirma: dict, mapping: dict, base_url: str = SAT_PORTAL_URL)
     else:
         print(f"{_ts()} [{_elapsed()}s] Enviar pressed")
     page.wait_for_load_state("domcontentloaded")
-    # Wait for redirect after login (e.g. to portal home)
-    page.wait_for_timeout(3000)
+    # Wait for SAT to navigate away from e.firma (post-login page to load) before we proceed.
+    print(f"{_ts()} [{_elapsed()}s] waiting for SAT post-login page...")
+    try:
+        page.wait_for_url(re.compile(r"clouda\.sat\.gob\.mx", re.I), timeout=20000)
+    except Exception:
+        pass
+    try:
+        for sel in (mapping.get("_nav_nuevo_portal") or []) + ["text=Cerrar Sesión", "text=Bienvenido"]:
+            try:
+                page.locator(sel).first.wait_for(state="visible", timeout=15000)
+                break
+            except Exception:
+                continue
+    except Exception:
+        pass
+    page.wait_for_timeout(2000)
+    print(f"{_ts()} [{_elapsed()}s] post-login page ready.")
     err = _check_sat_page_error(page)
     if err:
         LOG.error("SAT issue after login: %s", err)
@@ -389,20 +481,246 @@ def navigate_to_declaration(page, mapping: dict) -> None:
     page.wait_for_timeout(3000)
 
 
-def fill_initial_form(page, data: dict, mapping: dict) -> None:
-    """Fill Ejercicio, Periodicidad, Periodo, Tipo de declaración (in order; dynamic UI)."""
+def _debug_ts() -> str:
+    """Timestamp for debug prints (same format as login_sat)."""
+    now = datetime.now()
+    return now.strftime("%Y-%m-%d %H:%M:%S") + f",{now.microsecond // 1000:03d}"
+
+
+def _try_fill_select_by_index(scope: Page | Frame, index: int, value_str: str) -> bool:
+    """Try to set a <select> by its index in scope (0-based). Uses value then label. Returns True if successful."""
+    try:
+        loc = scope.locator("select")
+        sel = loc.nth(index)
+        sel.wait_for(state="visible", timeout=4000)
+        try:
+            sel.select_option(value=value_str)
+            return True
+        except Exception:
+            sel.select_option(label=value_str)
+            return True
+    except Exception:
+        return False
+
+
+def _fill_select_by_mapping(
+    scope: Page | Frame, page_for_wait: Page, selector_list: list, value_str: str
+) -> bool:
+    """Try each selector in the list (e.g. from form_field_mapping) and set the select by value then label. Returns True if any succeeds."""
+    if not selector_list:
+        return False
+    for sel_str in selector_list:
+        try:
+            dropdown = scope.locator(sel_str).first
+            dropdown.wait_for(state="visible", timeout=5000)
+            try:
+                dropdown.select_option(value=value_str, timeout=6000)
+                return True
+            except Exception:
+                dropdown.select_option(label=value_str, timeout=6000)
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _fill_select_next_to_label(
+    scope: Page | Frame,
+    page_for_wait: Page,
+    label_text: str,
+    value_str: str,
+    mapping: dict | None = None,
+    initial_dropdown_key: str | None = None,
+) -> bool:
+    """Locate dropdown (by label or mapping), press dropdown, scroll if needed, select option matching Excel value (fallback to select_option for native <select>)."""
+    scope_type = "iframe" if isinstance(scope, Frame) else "page"
+    print(f"{_debug_ts()} [initial form DEBUG] Label={label_text!r} value={value_str!r} scope={scope_type}")
+
+    _SCROLL_TIMEOUT_MS = 2000  # avoid 30s default; skip scroll if it doesn't complete quickly
+    _OPTION_CLICK_TIMEOUT_MS = 2000  # short timeout: native <option> is often not visible (browser overlay), then we fall back to select_option
+
+    def do_press_dropdown_then_click_option(dropdown) -> bool:
+        """Strategy 1 (default): Press dropdown to open, scroll if needed, then select the option matching value_str (Excel).
+        Tries click(option) first; for native <select> options are often not visible, so falls back to select_option()."""
+        try:
+            dropdown.wait_for(state="visible", timeout=5000)
+            try:
+                dropdown.scroll_into_view_if_needed(timeout=_SCROLL_TIMEOUT_MS)
+            except Exception:
+                pass
+            page_for_wait.wait_for_timeout(100)
+            dropdown.click(timeout=5000)
+            page_for_wait.wait_for_timeout(400)
+            # Match option by value attribute first, then by visible text (label from Excel).
+            opt_by_value = dropdown.locator(f"option[value={repr(value_str)}]")
+            if opt_by_value.count() > 0:
+                option = opt_by_value.first
+            else:
+                option = dropdown.locator("option").filter(has_text=re.compile(re.escape(value_str), re.I)).first
+            option.wait_for(state="attached", timeout=3000)
+            try:
+                option.scroll_into_view_if_needed(timeout=_SCROLL_TIMEOUT_MS)
+            except Exception:
+                pass
+            try:
+                option.click(timeout=_OPTION_CLICK_TIMEOUT_MS)
+                return True
+            except Exception:
+                # Native <select>: options are not visible (browser renders them in overlay). Use select_option so Strategy 1 still succeeds.
+                try:
+                    dropdown.select_option(value=value_str, timeout=6000)
+                    return True
+                except Exception:
+                    dropdown.select_option(label=value_str, timeout=6000)
+                    return True
+        except Exception as e2:
+            print(f"{_debug_ts()} [initial form DEBUG]   Strategy 1 (press dropdown + select) failed: {e2}")
+            return False
+
+    def resolve_dropdown_from_label(label_el):
+        """Return the <select> element for this label (same cell, next cell, row, or parent). Returns None if not found."""
+        sel = label_el.locator("xpath=(ancestor::*[.//select and count(descendant::select)=1])[1]//select")
+        if sel.count() == 0:
+            sel = label_el.locator("xpath=((ancestor::td | ancestor::th)[1])//select")
+        if sel.count() == 0:
+            sel = label_el.locator("xpath=((ancestor::td | ancestor::th)[1])/following-sibling::*[1]//select")
+        if sel.count() == 0:
+            sel = label_el.locator("xpath=ancestor::tr[1]//select")
+        if sel.count() == 0:
+            sel = label_el.locator("xpath=..").locator("select")
+        if sel.count() == 0:
+            return None
+        if sel.count() > 1:
+            try:
+                idx = label_el.evaluate("""el => {
+                    const row = el.closest('tr');
+                    if (!row) return 0;
+                    const selects = Array.from(row.querySelectorAll('select'));
+                    for (let i = 0; i < selects.length; i++) {
+                        if ((selects[i].compareDocumentPosition(el) & Node.DOCUMENT_POSITION_PRECEDING) !== 0) return i;
+                    }
+                    return 0;
+                }""")
+                return label_el.locator("xpath=ancestor::tr[1]//select").nth(idx)
+            except Exception:
+                return sel.first
+        return sel.first
+
+    # Locate dropdown near label (or from mapping for initial form), press dropdown, scroll if needed, select option matching Excel value.
+    try:
+        dropdown = None
+        xpath_contains_arg = "'" + label_text.replace("'", "''") + "'"
+        xpath_label = (
+            "//*[(self::label or self::td or self::th or self::span or self::div)"
+            " and not(ancestor::select) and contains(., " + xpath_contains_arg + ")]"
+        )
+        label_el = scope.locator("xpath=" + xpath_label).last
+        label_el.wait_for(state="attached", timeout=5000)
+        dropdown = resolve_dropdown_from_label(label_el)
+        if dropdown is None and initial_dropdown_key and mapping and mapping.get(initial_dropdown_key):
+            sel_list = mapping[initial_dropdown_key] if isinstance(mapping[initial_dropdown_key], list) else [mapping[initial_dropdown_key]]
+            for sel_str in sel_list:
+                try:
+                    loc = scope.locator(sel_str).first
+                    loc.wait_for(state="visible", timeout=4000)
+                    dropdown = loc
+                    break
+                except Exception:
+                    continue
+        if dropdown is not None:
+            try:
+                el_id = dropdown.get_attribute("id") or "(no id)"
+                print(f"{_debug_ts()} [initial form DEBUG]   Strategy 1 (press dropdown, scroll, select option): dropdown id={el_id!r}")
+            except Exception:
+                pass
+            if do_press_dropdown_then_click_option(dropdown):
+                print(f"{_debug_ts()} [initial form DEBUG]   Strategy 1: filled OK")
+                return True
+    except Exception as e:
+        print(f"{_debug_ts()} [initial form DEBUG]   Strategy 1 exception: {e}")
+
+    print(f"{_debug_ts()} [initial form DEBUG]   Result: NOT filled for label={label_text!r}")
+    return False
+
+
+def _get_declaration_form_scope(page: Page) -> Page | Frame:
+    """Return the page or the frame that contains the declaration form selects. SAT often loads the form in an iframe."""
+    probe = "select[id*='TipoDeclaracion'], select[id*='EjercicioFiscal']"
+    try:
+        loc = page.locator(probe)
+        if loc.count() > 0:
+            return page
+    except Exception:
+        pass
+    for frame in page.frames:
+        if frame == page.main_frame:
+            continue
+        try:
+            loc = frame.locator(probe)
+            if loc.count() > 0:
+                LOG.info("Declaration form found in iframe")
+                return frame
+        except Exception:
+            continue
+    return page
+
+
+def fill_initial_form(page: Page, data: dict, mapping: dict) -> None:
+    """Fill only the four dropdowns by finding each label (Tipo de Declaración, Periodicidad, Ejercicio, Período) and setting the select to its right. RFC is pre-filled by SAT."""
+    scope = _get_declaration_form_scope(page)
+    page_for_wait = scope.page if isinstance(scope, Frame) else scope
     year = data.get("year")
     month = data.get("month")
+    periodicidad = data.get("periodicidad", 1)
+    tipo = data.get("tipo_declaracion", "Normal")
+    try:
+        p = int(periodicidad) if periodicidad is not None else 1
+    except (TypeError, ValueError):
+        p = 1
+    periodicidad_value = _SAT_PERIODICIDAD_VALUE.get(p, "M")
+    periodo_str = f"{month:02d}" if month is not None else "N/A"
+    print(f"{_debug_ts()} [initial form DEBUG] Scope: {'iframe' if isinstance(scope, Frame) else 'main page'}. Will fill: Tipo={tipo!r}, Periodicidad={periodicidad} (value {periodicidad_value!r}), Ejercicio={year}, Período={periodo_str}")
+    # Wait for at least one select to be in the DOM (SAT may render after post-login).
+    try:
+        loc = scope.locator("select")
+        loc.first.wait_for(state="visible", timeout=12000)
+        n_selects = loc.count()
+        print(f"{_debug_ts()} [initial form DEBUG] Selects in scope: {n_selects}")
+    except Exception as e:
+        print(f"{_debug_ts()} [initial form DEBUG] Wait for select failed: {e}")
+    page_for_wait.wait_for_timeout(300)
+    # Fill via Strategy 1 (default): press dropdown, scroll, select option matching Excel value. All four use same strategy; mapping used when label resolution fails.
+    print(f"{_debug_ts()} [initial form DEBUG] --- Filling Tipo de Declaración ---")
+    ok = _fill_select_next_to_label(scope, page_for_wait, "Tipo de Declaración", str(tipo), mapping=mapping, initial_dropdown_key="initial_tipo_declaracion")
+    print(f"{_debug_ts()} [initial form] Tipo de Declaración: {tipo}" + (" (filled)" if ok else " (NOT filled — check selectors)"))
+    page_for_wait.wait_for_timeout(800)
+    print(f"{_debug_ts()} [initial form DEBUG] --- Filling Periodicidad ---")
+    ok = _fill_select_next_to_label(scope, page_for_wait, "Periodicidad", periodicidad_value, mapping=mapping, initial_dropdown_key="initial_periodicidad")
+    print(f"{_debug_ts()} [initial form] Periodicidad: {periodicidad}" + (" (filled)" if ok else " (NOT filled — check selectors)"))
+    page_for_wait.wait_for_timeout(800)
     if year is not None:
-        _try_fill(page, mapping, "initial_ejercicio", str(year))
-        page.wait_for_timeout(500)
-    _try_fill(page, mapping, "initial_periodicidad", str(data.get("periodicidad", 1)))
-    page.wait_for_timeout(500)
+        print(f"{_debug_ts()} [initial form DEBUG] --- Filling Ejercicio ---")
+        ok = _fill_select_next_to_label(scope, page_for_wait, "Ejercicio", str(year), mapping=mapping, initial_dropdown_key="initial_ejercicio")
+        if not ok and mapping.get("initial_ejercicio"):
+            sel_list = mapping["initial_ejercicio"] if isinstance(mapping["initial_ejercicio"], list) else [mapping["initial_ejercicio"]]
+            ok = _fill_select_by_mapping(scope, page_for_wait, sel_list, str(year))
+            if ok:
+                print(f"{_debug_ts()} [initial form DEBUG] Ejercicio filled via mapping selectors")
+        print(f"{_debug_ts()} [initial form] Ejercicio: {year}" + (" (filled)" if ok else " (NOT filled — check selectors)"))
+        page_for_wait.wait_for_timeout(800)
+    # Período options may load after Ejercicio/Periodicidad postback. Options are months Enero–Diciembre.
+    page_for_wait.wait_for_timeout(1200)
     if month is not None:
-        _try_fill(page, mapping, "initial_periodo", f"{month:02d}")
-    page.wait_for_timeout(500)
-    _try_fill(page, mapping, "initial_tipo_declaracion", data.get("tipo_declaracion", "Normal"))
-    page.wait_for_timeout(1000)
+        print(f"{_debug_ts()} [initial form DEBUG] --- Filling Período ---")
+        periodo_value = _SAT_PERIODO_LABEL.get(month, "Enero")  # use Spanish label (Enero, Febrero, ...)
+        ok = _fill_select_next_to_label(scope, page_for_wait, "Período", periodo_value, mapping=mapping, initial_dropdown_key="initial_periodo")
+        if not ok and mapping.get("initial_periodo"):
+            sel_list = mapping["initial_periodo"] if isinstance(mapping["initial_periodo"], list) else [mapping["initial_periodo"]]
+            ok = _fill_select_by_mapping(scope, page_for_wait, sel_list, periodo_value)
+            if ok:
+                print(f"{_debug_ts()} [initial form DEBUG] Período filled via mapping selectors")
+        print(f"{_debug_ts()} [initial form] Período: {month:02d} ({periodo_value})" + (" (filled)" if ok else " (NOT filled — check selectors)"))
+    page_for_wait.wait_for_timeout(500)
 
 
 def fill_obligation_section(page, mapping: dict, label_map: dict, labels: list[str]) -> None:
@@ -413,7 +731,7 @@ def fill_obligation_section(page, mapping: dict, label_map: dict, labels: list[s
             continue
         if isinstance(value, float) and value == 0.0:
             continue
-        _try_fill(page, mapping, label, value)
+        _try_fill(page, page, mapping, label, value)
         page.wait_for_timeout(200)
 
 
@@ -506,10 +824,14 @@ def run(
     config_path: str | None = None,
     mapping_path: str | None = None,
     test_login: bool = False,
+    test_initial_form: bool = False,
+    test_full: bool = False,
 ) -> bool:
     """
     Full flow: read Excel → get e.firma → login SAT → navigate → fill initial → fill ISR → fill IVA → check totals → send.
     If test_login=True: only open SAT and perform e.firma login (no DB; use test_* in config). Returns True if login succeeded.
+    If test_initial_form=True: login then navigate and fill Declaración Provisional initial form (no Excel; use test_year, test_month, test_periodicidad in config).
+    If test_full=True: login + navigate + fill initial form only (e.firma from config, no DB; initial form from Excel). Stops after initial form; no ISR/IVA fill, no totals check, no send.
     Returns True if declaration was sent (or test step OK), False otherwise. Logs and prints outcome.
     """
     config = load_config(config_path)
@@ -538,7 +860,67 @@ def run(
                 context.close()
                 browser.close()
 
-    # Normal flow
+    if test_initial_form:
+        LOG.info("Test mode: login + fill initial Declaración Provisional form (no Excel/DB; using test_* from config)")
+        efirma = get_efirma_from_config(config)
+        t = config.get("test") or {}
+        year = config.get("test_year") or t.get("year")
+        month = config.get("test_month") or t.get("month")
+        periodicidad = config.get("test_periodicidad") or t.get("periodicidad") or 1
+        if year is None:
+            year = datetime.now().year
+        if month is None:
+            month = 1
+        data = {"year": int(year), "month": int(month), "periodicidad": int(periodicidad), "tipo_declaracion": "Normal", "label_map": {}}
+        LOG.info("Initial form test data: year=%s month=%s periodicidad=%s", data["year"], data["month"], data["periodicidad"])
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=False)
+            context = browser.new_context(accept_downloads=True)
+            page = context.new_page()
+            try:
+                login_sat(page, efirma, mapping, base_url)
+                LOG.info("Logged in; declaration form already on screen, filling initial form.")
+                fill_initial_form(page, data, mapping)
+                LOG.info("Test initial form: initial form step complete. Browser will stay open 15s for inspection.")
+                page.wait_for_timeout(500)
+                return True
+            except Exception as e:
+                LOG.exception("Test initial form failed")
+                print(str(e), file=sys.stderr)
+                return False
+            finally:
+                context.close()
+                browser.close()
+
+    # Full run in test mode (up to initial form only): Excel for initial form data, config for e.firma (no DB). No ISR/IVA fill, no send.
+    if test_full:
+        if not workbook_path:
+            raise ValueError("Test full run requires --workbook")
+        LOG.info("Test full run: e.firma from config (no DB); initial form from Excel; stopping after initial form (no ISR/IVA/send)")
+        data = read_impuestos(workbook_path)
+        LOG.info("Period: %s-%s, periodicidad: %s", data.get("year"), data.get("month"), data.get("periodicidad"))
+        efirma = get_efirma_from_config(config)
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=False)
+            context = browser.new_context(accept_downloads=True)
+            page = context.new_page()
+            try:
+                login_sat(page, efirma, mapping, base_url)
+                LOG.info("Logged in to SAT")
+                # Declaration form is already on screen after login; no navigation needed.
+                fill_initial_form(page, data, mapping)
+                LOG.info("Test full run: initial form step complete. Browser will stay open 15s for inspection.")
+                page.wait_for_timeout(15000)
+                return True
+            except Exception as e:
+                LOG.exception("Test full run failed")
+                print(str(e), file=sys.stderr)
+                return False
+            finally:
+                context.close()
+                browser.close()
+
+    # Normal flow (DB for e.firma)
     if not workbook_path or company_id is None or branch_id is None:
         raise ValueError("Normal run requires --workbook, --company-id, --branch-id")
     LOG.info("Reading workbook: %s", workbook_path)
@@ -557,7 +939,7 @@ def run(
         try:
             login_sat(page, efirma, mapping, base_url)
             LOG.info("Logged in to SAT")
-            navigate_to_declaration(page, mapping)
+            # Declaration form is already on screen after login; no navigation needed.
             fill_initial_form(page, data, mapping)
             # Submit initial form if there is a submit button (add selector to mapping if needed)
             page.wait_for_timeout(2000)
@@ -626,6 +1008,8 @@ def main() -> None:
     parser.add_argument("--config", help="Path to config.json (default: script dir/config.json)")
     parser.add_argument("--mapping", help="Path to form_field_mapping.json (default: script dir)")
     parser.add_argument("--test-login", action="store_true", help="Test only: open SAT and log in with local .cer/.key and password from config (no DB)")
+    parser.add_argument("--test-initial-form", action="store_true", help="Test phase 2: login then fill Declaración Provisional initial form (no Excel; use test_year, test_month, test_periodicidad in config)")
+    parser.add_argument("--test-full", action="store_true", help="Test up to initial form: e.firma from config, initial form from Excel (--workbook or test_workbook_path); stops after filling Ejercicio/Periodicidad/Período/Tipo (no ISR/IVA/send)")
     args = parser.parse_args()
 
     if args.test_login:
@@ -639,8 +1023,42 @@ def main() -> None:
         )
         sys.exit(0 if success else 1)
 
+    if args.test_initial_form:
+        success = run(
+            workbook_path=None,
+            company_id=None,
+            branch_id=None,
+            config_path=args.config,
+            mapping_path=args.mapping,
+            test_initial_form=True,
+        )
+        sys.exit(0 if success else 1)
+
+    if args.test_full:
+        workbook = args.workbook
+        if not workbook:
+            config_path = args.config or os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+            config = load_config(config_path)
+            t = config.get("test") or {}
+            workbook = config.get("test_workbook_path") or t.get("workbook_path")
+        if not workbook:
+            print("Error: --test-full requires --workbook or test_workbook_path in config.json.", file=sys.stderr)
+            sys.exit(2)
+        if not os.path.isfile(workbook):
+            print(f"Error: Workbook not found: {workbook}", file=sys.stderr)
+            sys.exit(2)
+        success = run(
+            workbook_path=workbook,
+            company_id=None,
+            branch_id=None,
+            config_path=args.config,
+            mapping_path=args.mapping,
+            test_full=True,
+        )
+        sys.exit(0 if success else 1)
+
     if not args.workbook or args.company_id is None or args.branch_id is None:
-        print("Error: --workbook, --company-id, and --branch-id are required unless --test-login.", file=sys.stderr)
+        print("Error: --workbook, --company-id, and --branch-id are required unless using a test mode.", file=sys.stderr)
         sys.exit(2)
     if not os.path.isfile(args.workbook):
         print(f"Error: Workbook not found: {args.workbook}", file=sys.stderr)
