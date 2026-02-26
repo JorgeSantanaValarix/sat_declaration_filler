@@ -512,12 +512,12 @@ def _fill_select_by_mapping(
     for sel_str in selector_list:
         try:
             dropdown = scope.locator(sel_str).first
-            dropdown.wait_for(state="visible", timeout=5000)
+            dropdown.wait_for(state="visible", timeout=2000)
             try:
-                dropdown.select_option(value=value_str, timeout=6000)
+                dropdown.select_option(value=value_str, timeout=3000)
                 return True
             except Exception:
-                dropdown.select_option(label=value_str, timeout=6000)
+                dropdown.select_option(label=value_str, timeout=3000)
                 return True
         except Exception:
             continue
@@ -536,28 +536,27 @@ def _fill_select_next_to_label(
     scope_type = "iframe" if isinstance(scope, Frame) else "page"
     print(f"{_debug_ts()} [initial form DEBUG] Label={label_text!r} value={value_str!r} scope={scope_type}")
 
-    _SCROLL_TIMEOUT_MS = 2000  # avoid 30s default; skip scroll if it doesn't complete quickly
-    _OPTION_CLICK_TIMEOUT_MS = 2000  # short timeout: native <option> is often not visible (browser overlay), then we fall back to select_option
+    _SCROLL_TIMEOUT_MS = 800   # quick scroll like login; avoid 30s default
+    _OPTION_CLICK_TIMEOUT_MS = 1000  # fail fast to select_option fallback (native <option> often not visible)
 
     def do_press_dropdown_then_click_option(dropdown) -> bool:
-        """Strategy 1 (default): Press dropdown to open, scroll if needed, then select the option matching value_str (Excel).
-        Tries click(option) first; for native <select> options are often not visible, so falls back to select_option()."""
+        """Press dropdown to open, scroll if needed, select option matching value_str. Falls back to select_option() for native <select>."""
         try:
-            dropdown.wait_for(state="visible", timeout=5000)
+            dropdown.wait_for(state="visible", timeout=2000)
             try:
                 dropdown.scroll_into_view_if_needed(timeout=_SCROLL_TIMEOUT_MS)
             except Exception:
                 pass
-            page_for_wait.wait_for_timeout(100)
-            dropdown.click(timeout=5000)
-            page_for_wait.wait_for_timeout(400)
-            # Match option by value attribute first, then by visible text (label from Excel).
+            page_for_wait.wait_for_timeout(50)
+            dropdown.click(timeout=2000)
+            page_for_wait.wait_for_timeout(150)
+            # Match option by value first, then by visible text (Excel label).
             opt_by_value = dropdown.locator(f"option[value={repr(value_str)}]")
             if opt_by_value.count() > 0:
                 option = opt_by_value.first
             else:
                 option = dropdown.locator("option").filter(has_text=re.compile(re.escape(value_str), re.I)).first
-            option.wait_for(state="attached", timeout=3000)
+            option.wait_for(state="attached", timeout=1500)
             try:
                 option.scroll_into_view_if_needed(timeout=_SCROLL_TIMEOUT_MS)
             except Exception:
@@ -566,12 +565,12 @@ def _fill_select_next_to_label(
                 option.click(timeout=_OPTION_CLICK_TIMEOUT_MS)
                 return True
             except Exception:
-                # Native <select>: options are not visible (browser renders them in overlay). Use select_option so Strategy 1 still succeeds.
+                # Native <select>: option not visible; use select_option (like login speed).
                 try:
-                    dropdown.select_option(value=value_str, timeout=6000)
+                    dropdown.select_option(value=value_str, timeout=3000)
                     return True
                 except Exception:
-                    dropdown.select_option(label=value_str, timeout=6000)
+                    dropdown.select_option(label=value_str, timeout=3000)
                     return True
         except Exception as e2:
             print(f"{_debug_ts()} [initial form DEBUG]   Strategy 1 (press dropdown + select) failed: {e2}")
@@ -615,14 +614,14 @@ def _fill_select_next_to_label(
             " and not(ancestor::select) and contains(., " + xpath_contains_arg + ")]"
         )
         label_el = scope.locator("xpath=" + xpath_label).last
-        label_el.wait_for(state="attached", timeout=5000)
+        label_el.wait_for(state="attached", timeout=2000)
         dropdown = resolve_dropdown_from_label(label_el)
         if dropdown is None and initial_dropdown_key and mapping and mapping.get(initial_dropdown_key):
             sel_list = mapping[initial_dropdown_key] if isinstance(mapping[initial_dropdown_key], list) else [mapping[initial_dropdown_key]]
             for sel_str in sel_list:
                 try:
                     loc = scope.locator(sel_str).first
-                    loc.wait_for(state="visible", timeout=4000)
+                    loc.wait_for(state="visible", timeout=2000)
                     dropdown = loc
                     break
                 except Exception:
@@ -688,16 +687,16 @@ def fill_initial_form(page: Page, data: dict, mapping: dict) -> None:
         print(f"{_debug_ts()} [initial form DEBUG] Selects in scope: {n_selects}")
     except Exception as e:
         print(f"{_debug_ts()} [initial form DEBUG] Wait for select failed: {e}")
-    page_for_wait.wait_for_timeout(300)
-    # Fill via Strategy 1 (default): press dropdown, scroll, select option matching Excel value. All four use same strategy; mapping used when label resolution fails.
+    page_for_wait.wait_for_timeout(150)
+    # Fill via Strategy 1: press dropdown, scroll, select option (same pace as login).
     print(f"{_debug_ts()} [initial form DEBUG] --- Filling Tipo de Declaración ---")
     ok = _fill_select_next_to_label(scope, page_for_wait, "Tipo de Declaración", str(tipo), mapping=mapping, initial_dropdown_key="initial_tipo_declaracion")
     print(f"{_debug_ts()} [initial form] Tipo de Declaración: {tipo}" + (" (filled)" if ok else " (NOT filled — check selectors)"))
-    page_for_wait.wait_for_timeout(800)
+    page_for_wait.wait_for_timeout(300)
     print(f"{_debug_ts()} [initial form DEBUG] --- Filling Periodicidad ---")
     ok = _fill_select_next_to_label(scope, page_for_wait, "Periodicidad", periodicidad_value, mapping=mapping, initial_dropdown_key="initial_periodicidad")
     print(f"{_debug_ts()} [initial form] Periodicidad: {periodicidad}" + (" (filled)" if ok else " (NOT filled — check selectors)"))
-    page_for_wait.wait_for_timeout(800)
+    page_for_wait.wait_for_timeout(300)
     if year is not None:
         print(f"{_debug_ts()} [initial form DEBUG] --- Filling Ejercicio ---")
         ok = _fill_select_next_to_label(scope, page_for_wait, "Ejercicio", str(year), mapping=mapping, initial_dropdown_key="initial_ejercicio")
@@ -707,9 +706,9 @@ def fill_initial_form(page: Page, data: dict, mapping: dict) -> None:
             if ok:
                 print(f"{_debug_ts()} [initial form DEBUG] Ejercicio filled via mapping selectors")
         print(f"{_debug_ts()} [initial form] Ejercicio: {year}" + (" (filled)" if ok else " (NOT filled — check selectors)"))
-        page_for_wait.wait_for_timeout(800)
-    # Período options may load after Ejercicio/Periodicidad postback. Options are months Enero–Diciembre.
-    page_for_wait.wait_for_timeout(1200)
+        page_for_wait.wait_for_timeout(300)
+    # Período options may load after Ejercicio/Periodicidad postback.
+    page_for_wait.wait_for_timeout(400)
     if month is not None:
         print(f"{_debug_ts()} [initial form DEBUG] --- Filling Período ---")
         periodo_value = _SAT_PERIODO_LABEL.get(month, "Enero")  # use Spanish label (Enero, Febrero, ...)
@@ -720,7 +719,7 @@ def fill_initial_form(page: Page, data: dict, mapping: dict) -> None:
             if ok:
                 print(f"{_debug_ts()} [initial form DEBUG] Período filled via mapping selectors")
         print(f"{_debug_ts()} [initial form] Período: {month:02d} ({periodo_value})" + (" (filled)" if ok else " (NOT filled — check selectors)"))
-    page_for_wait.wait_for_timeout(500)
+    page_for_wait.wait_for_timeout(200)
 
 
 def fill_obligation_section(page, mapping: dict, label_map: dict, labels: list[str]) -> None:
