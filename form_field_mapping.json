@@ -9,6 +9,7 @@
   "_nav_nuevo_portal": ["a:has-text('Nuevo Portal de pagos provisionales')", "text=Nuevo Portal de pagos provisionales"],
   "_nav_presentar_declaracion": ["a:has-text('Presentar Declaración')", "text=Presentar Declaración"],
   "_nav_iniciar_nueva": ["a:has-text('Iniciar una nueva declaración')", "button:has-text('Iniciar una nueva declaración')"],
+  "_select_obligation_isr": ["text=ISR simplificado de confianza. Personas físicas", "a:has-text('ISR simplificado de confianza')", "[data-obligation='isr']", "button:has-text('ISR simplificado')"],
   "initial_ejercicio": ["#MainContent_wucConfigDeclaracion_wucDdlEjercicioFiscal_ddlCatalogo", "select[id*='EjercicioFiscal']", "select[name*='EjercicioFiscal']", "select[name*='wucDdlEjercicioFiscal']", "label=Ejercicio", "select[name*='ejercicio']", "[id*='Ejercicio']"],
   "initial_periodicidad": ["#MainContent_wucConfigDeclaracion_wucDdlPeriodicidad_ddlCatalogo", "select[id*='wucDdlPeriodicidad']", "select[id*='Periodicidad']", "select[id*='periodicidad']", "select[name*='Periodicidad']", "select[name*='wucDdlPeriodicidad']", "#periodicidad", "label=Periodicidad", "[id*='ddlPeriodicidad']"],
   "initial_periodo": ["#MainContent_wucConfigDeclaracion_wucDdlPeriodoFiscal_ddlCatalogo", "select[id*='PeriodoFiscal']", "select[id*='wucDdlPeriodoFiscal']", "select[id*='Periodo']", "select[id*='periodo']", "select[name*='Periodo']", "select[name*='wucDdlPeriodo']", "#periodo", "label=Período", "label=Periodo", "[id*='ddlPeriodo']"],

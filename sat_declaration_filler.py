@@ -31,7 +31,8 @@ IMPUESTOS_SHEET = "Impuestos"
 ISR_RANGE = (4, 29)   # rows 4-29, cols D,E
 IVA_RANGE = (33, 58)  # rows 33-58, cols D,E
 TOLERANCE_PESOS = 1
-SAT_PORTAL_URL = "https://ptscdecprov.clouda.sat.gob.mx/"
+# Declaración Provisional (pstcdypisr): after login, click "Presentar declaración" to open Configuración de la declaración.
+SAT_PORTAL_URL = "https://pstcdypisr.clouda.sat.gob.mx/"
 SP_GET_EFIRMA = "[GET_AUTOMATICTAXDECLARATION_CUSTOMERDATA]"
 LOG = logging.getLogger("sat_declaration_filler")
 
@@ -222,7 +223,7 @@ _SAT_PERIODICIDAD_VALUE = {
     9: "N",   # 9-Sin Periodo
 }
 
-# SAT Ejercicio dropdown: options are years 2002–2026 (we pass str(year), e.g. "2026").
+# SAT Ejercicio dropdown: options are years 2022–2026 (we pass str(year), e.g. "2026").
 
 # SAT Período dropdown: options are months Enero–Diciembre (labels in Spanish). We pass label for select_option.
 _SAT_PERIODO_LABEL = {
@@ -454,7 +455,7 @@ def login_sat(page, efirma: dict, mapping: dict, base_url: str = SAT_PORTAL_URL)
     except Exception:
         pass
     try:
-        for sel in (mapping.get("_nav_nuevo_portal") or []) + ["text=Cerrar Sesión", "text=Bienvenido"]:
+        for sel in (mapping.get("_nav_presentar_declaracion") or []) + (mapping.get("_nav_nuevo_portal") or []) + ["text=Presentar declaración", "text=Cerrar Sesión", "text=Bienvenido"]:
             try:
                 page.locator(sel).first.wait_for(state="visible", timeout=15000)
                 break
@@ -472,13 +473,33 @@ def login_sat(page, efirma: dict, mapping: dict, base_url: str = SAT_PORTAL_URL)
 
 
 def navigate_to_declaration(page, mapping: dict) -> None:
-    """Click Nuevo Portal → Presentar Declaración → Iniciar una nueva declaración."""
+    """Click Nuevo Portal → Presentar Declaración → Iniciar una nueva declaración (legacy portal)."""
     _try_click(page, mapping, "_nav_nuevo_portal")
     page.wait_for_timeout(2000)
     _try_click(page, mapping, "_nav_presentar_declaracion")
     page.wait_for_timeout(2000)
     _try_click(page, mapping, "_nav_iniciar_nueva")
     page.wait_for_timeout(3000)
+
+
+def open_configuration_form(page: Page, mapping: dict) -> bool:
+    """Open 'Configuración de la declaración' by clicking 'Presentar declaración' (pstcdypisr: Ejercicio/Periodicidad/Periodo/Tipo dropdowns appear here). Returns True if clicked."""
+    ok = _try_click(page, mapping, "_nav_presentar_declaracion")
+    if ok:
+        page.wait_for_timeout(2000)
+        try:
+            page.locator("select").first.wait_for(state="visible", timeout=10000)
+        except Exception:
+            pass
+    return ok
+
+
+def open_obligation_isr(page, mapping: dict) -> bool:
+    """Select 'ISR simplificado de confianza. Personas físicas' to open the ISR section (Administración de la declaración). Returns True if clicked."""
+    ok = _try_click(page, mapping, "_select_obligation_isr")
+    if ok:
+        page.wait_for_timeout(1500)
+    return ok
 
 
 def _debug_ts() -> str:
@@ -665,7 +686,7 @@ def _get_declaration_form_scope(page: Page) -> Page | Frame:
 
 
 def fill_initial_form(page: Page, data: dict, mapping: dict) -> None:
-    """Fill only the four dropdowns by finding each label (Tipo de Declaración, Periodicidad, Ejercicio, Período) and setting the select to its right. RFC is pre-filled by SAT."""
+    """Fill Configuración de la declaración in order: Ejercicio (2022–2026) → Periodicidad → Periodo (Enero–Diciembre, YTD) → Tipo de declaración (Normal / Normal por Corrección Fiscal). Each dropdown may appear after the previous is selected."""
     scope = _get_declaration_form_scope(page)
     page_for_wait = scope.page if isinstance(scope, Frame) else scope
     year = data.get("year")
@@ -678,8 +699,8 @@ def fill_initial_form(page: Page, data: dict, mapping: dict) -> None:
         p = 1
     periodicidad_value = _SAT_PERIODICIDAD_VALUE.get(p, "M")
     periodo_str = f"{month:02d}" if month is not None else "N/A"
-    print(f"{_debug_ts()} [initial form DEBUG] Scope: {'iframe' if isinstance(scope, Frame) else 'main page'}. Will fill: Tipo={tipo!r}, Periodicidad={periodicidad} (value {periodicidad_value!r}), Ejercicio={year}, Período={periodo_str}")
-    # Wait for at least one select to be in the DOM (SAT may render after post-login).
+    print(f"{_debug_ts()} [initial form DEBUG] Scope: {'iframe' if isinstance(scope, Frame) else 'main page'}. Will fill in order: Ejercicio={year}, Periodicidad={periodicidad} (value {periodicidad_value!r}), Periodo={periodo_str}, Tipo={tipo!r}")
+    # Wait for at least one select (Ejercicio) to be visible.
     try:
         loc = scope.locator("select")
         loc.first.wait_for(state="visible", timeout=12000)
@@ -688,15 +709,7 @@ def fill_initial_form(page: Page, data: dict, mapping: dict) -> None:
     except Exception as e:
         print(f"{_debug_ts()} [initial form DEBUG] Wait for select failed: {e}")
     page_for_wait.wait_for_timeout(150)
-    # Fill via Strategy 1: press dropdown, scroll, select option (same pace as login).
-    print(f"{_debug_ts()} [initial form DEBUG] --- Filling Tipo de Declaración ---")
-    ok = _fill_select_next_to_label(scope, page_for_wait, "Tipo de Declaración", str(tipo), mapping=mapping, initial_dropdown_key="initial_tipo_declaracion")
-    print(f"{_debug_ts()} [initial form] Tipo de Declaración: {tipo}" + (" (filled)" if ok else " (NOT filled — check selectors)"))
-    page_for_wait.wait_for_timeout(300)
-    print(f"{_debug_ts()} [initial form DEBUG] --- Filling Periodicidad ---")
-    ok = _fill_select_next_to_label(scope, page_for_wait, "Periodicidad", periodicidad_value, mapping=mapping, initial_dropdown_key="initial_periodicidad")
-    print(f"{_debug_ts()} [initial form] Periodicidad: {periodicidad}" + (" (filled)" if ok else " (NOT filled — check selectors)"))
-    page_for_wait.wait_for_timeout(300)
+    # Order per updated SAT form: Ejercicio → Periodicidad → Periodo (appears after Periodicidad) → Tipo de declaración (appears after Periodo).
     if year is not None:
         print(f"{_debug_ts()} [initial form DEBUG] --- Filling Ejercicio ---")
         ok = _fill_select_next_to_label(scope, page_for_wait, "Ejercicio", str(year), mapping=mapping, initial_dropdown_key="initial_ejercicio")
@@ -707,18 +720,33 @@ def fill_initial_form(page: Page, data: dict, mapping: dict) -> None:
                 print(f"{_debug_ts()} [initial form DEBUG] Ejercicio filled via mapping selectors")
         print(f"{_debug_ts()} [initial form] Ejercicio: {year}" + (" (filled)" if ok else " (NOT filled — check selectors)"))
         page_for_wait.wait_for_timeout(300)
-    # Período options may load after Ejercicio/Periodicidad postback.
-    page_for_wait.wait_for_timeout(400)
+    print(f"{_debug_ts()} [initial form DEBUG] --- Filling Periodicidad ---")
+    ok = _fill_select_next_to_label(scope, page_for_wait, "Periodicidad", periodicidad_value, mapping=mapping, initial_dropdown_key="initial_periodicidad")
+    print(f"{_debug_ts()} [initial form] Periodicidad: {periodicidad}" + (" (filled)" if ok else " (NOT filled — check selectors)"))
+    page_for_wait.wait_for_timeout(800)
+    # Periodo dropdown appears after Periodicidad (Enero–Diciembre; SAT may show only YTD months).
     if month is not None:
-        print(f"{_debug_ts()} [initial form DEBUG] --- Filling Período ---")
-        periodo_value = _SAT_PERIODO_LABEL.get(month, "Enero")  # use Spanish label (Enero, Febrero, ...)
+        print(f"{_debug_ts()} [initial form DEBUG] --- Filling Periodo ---")
+        periodo_value = _SAT_PERIODO_LABEL.get(month, "Enero")
         ok = _fill_select_next_to_label(scope, page_for_wait, "Período", periodo_value, mapping=mapping, initial_dropdown_key="initial_periodo")
+        if not ok:
+            ok = _fill_select_next_to_label(scope, page_for_wait, "Periodo", periodo_value, mapping=mapping, initial_dropdown_key="initial_periodo")
         if not ok and mapping.get("initial_periodo"):
             sel_list = mapping["initial_periodo"] if isinstance(mapping["initial_periodo"], list) else [mapping["initial_periodo"]]
             ok = _fill_select_by_mapping(scope, page_for_wait, sel_list, periodo_value)
             if ok:
-                print(f"{_debug_ts()} [initial form DEBUG] Período filled via mapping selectors")
-        print(f"{_debug_ts()} [initial form] Período: {month:02d} ({periodo_value})" + (" (filled)" if ok else " (NOT filled — check selectors)"))
+                print(f"{_debug_ts()} [initial form DEBUG] Periodo filled via mapping selectors")
+        print(f"{_debug_ts()} [initial form] Periodo: {month:02d} ({periodo_value})" + (" (filled)" if ok else " (NOT filled — check selectors)"))
+        page_for_wait.wait_for_timeout(800)
+    # Tipo de declaración appears after Periodo (Normal / Normal por Corrección Fiscal). SAT may show label as "Tipo de declaración" (lowercase d).
+    print(f"{_debug_ts()} [initial form DEBUG] --- Filling Tipo de Declaración ---")
+    ok = _fill_select_next_to_label(scope, page_for_wait, "Tipo de Declaración", str(tipo), mapping=mapping, initial_dropdown_key="initial_tipo_declaracion")
+    if not ok:
+        ok = _fill_select_next_to_label(scope, page_for_wait, "Tipo de declaración", str(tipo), mapping=mapping, initial_dropdown_key="initial_tipo_declaracion")
+    if not ok and mapping.get("initial_tipo_declaracion"):
+        sel_list = mapping["initial_tipo_declaracion"] if isinstance(mapping["initial_tipo_declaracion"], list) else [mapping["initial_tipo_declaracion"]]
+        ok = _fill_select_by_mapping(scope, page_for_wait, sel_list, str(tipo))
+    print(f"{_debug_ts()} [initial form] Tipo de Declaración: {tipo}" + (" (filled)" if ok else " (NOT filled — check selectors)"))
     page_for_wait.wait_for_timeout(200)
 
 
@@ -825,12 +853,14 @@ def run(
     test_login: bool = False,
     test_initial_form: bool = False,
     test_full: bool = False,
+    test_phase3: bool = False,
 ) -> bool:
     """
     Full flow: read Excel → get e.firma → login SAT → navigate → fill initial → fill ISR → fill IVA → check totals → send.
     If test_login=True: only open SAT and perform e.firma login (no DB; use test_* in config). Returns True if login succeeded.
-    If test_initial_form=True: login then navigate and fill Declaración Provisional initial form (no Excel; use test_year, test_month, test_periodicidad in config).
-    If test_full=True: login + navigate + fill initial form only (e.firma from config, no DB; initial form from Excel). Stops after initial form; no ISR/IVA fill, no totals check, no send.
+    If test_initial_form=True: login then fill Declaración Provisional initial form (no Excel; use test_year, test_month, test_periodicidad in config).
+    If test_full=True: login + fill initial form only (e.firma from config; initial form from Excel). Stops after initial form.
+    If test_phase3=True: login + fill initial form + select ISR simplificado de confianza + fill ISR section (Ingresos, etc.). Stops after ISR fill; no IVA/send. Requires --workbook.
     Returns True if declaration was sent (or test step OK), False otherwise. Logs and prints outcome.
     """
     config = load_config(config_path)
@@ -878,10 +908,12 @@ def run(
             page = context.new_page()
             try:
                 login_sat(page, efirma, mapping, base_url)
-                LOG.info("Logged in; declaration form already on screen, filling initial form.")
+                LOG.info("Opening Configuración de la declaración (Presentar declaración)")
+                if not open_configuration_form(page, mapping):
+                    LOG.warning("Could not click Presentar declaración; continuing to fill initial form.")
                 fill_initial_form(page, data, mapping)
-                LOG.info("Test initial form: initial form step complete. Browser will stay open 15s for inspection.")
-                page.wait_for_timeout(500)
+                LOG.info("Test initial form: initial form step complete. Browser will stay open 10s for inspection.")
+                page.wait_for_timeout(10000)
                 return True
             except Exception as e:
                 LOG.exception("Test initial form failed")
@@ -906,13 +938,59 @@ def run(
             try:
                 login_sat(page, efirma, mapping, base_url)
                 LOG.info("Logged in to SAT")
-                # Declaration form is already on screen after login; no navigation needed.
+                if not open_configuration_form(page, mapping):
+                    LOG.warning("Could not click Presentar declaración; continuing to fill initial form.")
                 fill_initial_form(page, data, mapping)
-                LOG.info("Test full run: initial form step complete. Browser will stay open 15s for inspection.")
-                page.wait_for_timeout(15000)
+                LOG.info("Test full run: initial form step complete. Browser will stay open 60s for inspection.")
+                page.wait_for_timeout(60000)
                 return True
             except Exception as e:
                 LOG.exception("Test full run failed")
+                print(str(e), file=sys.stderr)
+                return False
+            finally:
+                context.close()
+                browser.close()
+
+    # Phase 3 test: login, initial form, select ISR simplificado de confianza, fill ISR section (pages 24–51); stop for inspection.
+    if test_phase3:
+        if not workbook_path:
+            raise ValueError("Test phase 3 requires --workbook")
+        LOG.info("Test phase 3: Phase 1 (login) + Phase 2 (initial form) + Phase 3 (select ISR simplificado, fill ISR section); e.firma from config, data from Excel; no IVA/send")
+        data = read_impuestos(workbook_path)
+        label_map = data["label_map"]
+        LOG.info("Period: %s-%s, periodicidad: %s", data.get("year"), data.get("month"), data.get("periodicidad"))
+        efirma = get_efirma_from_config(config)
+        isr_labels = [
+            "Ingresos nominales facturados",
+            "Total de ingresos acumulados",
+            "Base gravable del pago provisional",
+            "Impuesto del periodo",
+            "Total ISR retenido del periodo",
+            "ISR a cargo",
+        ]
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=False)
+            context = browser.new_context(accept_downloads=True)
+            page = context.new_page()
+            try:
+                LOG.info("Phase 1: Logging in to SAT (e.firma)")
+                login_sat(page, efirma, mapping, base_url)
+                LOG.info("Phase 2: Opening Configuración (Presentar declaración), then filling Ejercicio → Periodicidad → Periodo → Tipo")
+                if not open_configuration_form(page, mapping):
+                    LOG.warning("Could not click Presentar declaración")
+                fill_initial_form(page, data, mapping)
+                page.wait_for_timeout(500)
+                LOG.info("Phase 3: Selecting ISR simplificado de confianza and filling ISR section")
+                if not open_obligation_isr(page, mapping):
+                    LOG.warning("Could not click ISR simplificado de confianza")
+                page.wait_for_timeout(500)
+                fill_obligation_section(page, mapping, label_map, isr_labels)
+                LOG.info("Test phase 3 complete (Phase 1 login + Phase 2 initial form + Phase 3 ISR section). Browser will stay open 60s for inspection.")
+                page.wait_for_timeout(60000)
+                return True
+            except Exception as e:
+                LOG.exception("Test phase 3 failed")
                 print(str(e), file=sys.stderr)
                 return False
             finally:
@@ -938,12 +1016,15 @@ def run(
         try:
             login_sat(page, efirma, mapping, base_url)
             LOG.info("Logged in to SAT")
-            # Declaration form is already on screen after login; no navigation needed.
+            if not open_configuration_form(page, mapping):
+                LOG.warning("Could not click Presentar declaración")
             fill_initial_form(page, data, mapping)
-            # Submit initial form if there is a submit button (add selector to mapping if needed)
             page.wait_for_timeout(2000)
 
-            # Fill ISR section (order: open obligation then fill fields)
+            # Phase 3: Select ISR simplificado de confianza, then fill ISR section (Ingresos tab, etc.)
+            if not open_obligation_isr(page, mapping):
+                LOG.warning("Could not click ISR simplificado de confianza; continuing to fill ISR fields anyway.")
+            page.wait_for_timeout(500)
             isr_labels = [
                 "Ingresos nominales facturados",
                 "Total de ingresos acumulados",
@@ -1009,6 +1090,7 @@ def main() -> None:
     parser.add_argument("--test-login", action="store_true", help="Test only: open SAT and log in with local .cer/.key and password from config (no DB)")
     parser.add_argument("--test-initial-form", action="store_true", help="Test phase 2: login then fill Declaración Provisional initial form (no Excel; use test_year, test_month, test_periodicidad in config)")
     parser.add_argument("--test-full", action="store_true", help="Test up to initial form: e.firma from config, initial form from Excel (--workbook or test_workbook_path); stops after filling Ejercicio/Periodicidad/Período/Tipo (no ISR/IVA/send)")
+    parser.add_argument("--test-phase3", action="store_true", help="Test phase 3: login, initial form, select ISR simplificado de confianza, fill ISR section (Ingresos etc.); requires --workbook; stops before IVA/send")
     args = parser.parse_args()
 
     if args.test_login:
@@ -1053,6 +1135,29 @@ def main() -> None:
             config_path=args.config,
             mapping_path=args.mapping,
             test_full=True,
+        )
+        sys.exit(0 if success else 1)
+
+    if args.test_phase3:
+        workbook = args.workbook
+        if not workbook:
+            config_path = args.config or os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+            config = load_config(config_path)
+            t = config.get("test") or {}
+            workbook = config.get("test_workbook_path") or t.get("workbook_path")
+        if not workbook:
+            print("Error: --test-phase3 requires --workbook or test_workbook_path in config.json.", file=sys.stderr)
+            sys.exit(2)
+        if not os.path.isfile(workbook):
+            print(f"Error: Workbook not found: {workbook}", file=sys.stderr)
+            sys.exit(2)
+        success = run(
+            workbook_path=workbook,
+            company_id=None,
+            branch_id=None,
+            config_path=args.config,
+            mapping_path=args.mapping,
+            test_phase3=True,
         )
         sys.exit(0 if success else 1)
 
