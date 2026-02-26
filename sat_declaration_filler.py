@@ -37,7 +37,12 @@ IVA_RANGE = (33, 58)  # rows 33-58, cols D,E
 TOLERANCE_PESOS = 1
 # Declaración Provisional (pstcdypisr): after login, click "Presentar declaración" to open Configuración de la declaración.
 SAT_PORTAL_URL = "https://pstcdypisr.clouda.sat.gob.mx/"
-RETRY_WAIT_SECONDS = 10  # wait before single retry after error (e.g. SAT 500)
+RETRY_WAIT_SECONDS = 60  # wait before single retry after error (e.g. SAT HTTP 500; give server time to recover)
+# Phase 2 → 3: wait for "Cargando información" to disappear (max seconds), then for pre-fill pop-up CERRAR to appear
+PHASE3_LOADING_MAX_WAIT_SEC = 90
+PHASE3_POPUP_WAIT_FOR_CERRAR_SEC = 45   # wait for CERRAR button to appear (pop-up can take several seconds)
+PHASE3_POPUP_CERRAR_CLICK_MS = 5000    # timeout when clicking CERRAR once it's visible
+PHASE3_POPUP_CERRAR_SELECTOR_MS = 4000  # per mapping selector (fail fast)
 SP_GET_EFIRMA = "[GET_AUTOMATICTAXDECLARATION_CUSTOMERDATA]"
 LOG = logging.getLogger("sat_declaration_filler")
 
@@ -506,6 +511,118 @@ def navigate_to_declaration(page, mapping: dict) -> None:
     page.wait_for_timeout(3000)
 
 
+DRAFT_PAGE_WAIT_MS = 10000  # wait up to this long for draft text to appear after login
+DRAFT_POLL_MS = 500  # poll page body every this many ms for draft text
+
+
+def dismiss_draft_if_present(page: Page, mapping: dict) -> bool:
+    """If 'Formulario no concluido' is shown (saved draft), click trash icon and confirm 'Sí' to delete; then we can continue to initial form. Returns True if a draft was dismissed."""
+    LOG.info("Checking for draft declaration (Formulario no concluido) after Presentar declaración, before filling initial form...")
+    # Give the post-login page time to render.
+    page.wait_for_timeout(2000)
+    # Poll page body text for draft phrases (avoids relying on a single element's visibility).
+    draft_markers = ("formulario no concluido", "formularios no enviados")
+    t_end = (time.perf_counter() * 1000) + DRAFT_PAGE_WAIT_MS
+    draft_found = False
+    while (time.perf_counter() * 1000) < t_end:
+        try:
+            body = (page.locator("body").inner_text(timeout=3000) or "").lower()
+            if any(m in body for m in draft_markers):
+                draft_found = True
+                break
+        except Exception:
+            pass
+        page.wait_for_timeout(DRAFT_POLL_MS)
+    if not draft_found:
+        LOG.info("No draft declaration detected; proceeding to configuration form.")
+        return False
+    LOG.info("Formulario no concluido detected; dismissing saved draft (trash → Sí)")
+    try:
+        # Click trash icon (first one next to a draft row)
+        trash_clicked = False
+        if mapping.get("_draft_trash"):
+            for sel in mapping["_draft_trash"]:
+                try:
+                    loc = page.locator(sel).first
+                    loc.wait_for(state="visible", timeout=3000)
+                    loc.click()
+                    trash_clicked = True
+                    break
+                except Exception:
+                    continue
+        if not trash_clicked:
+            # Fallback: find delete/trash control in draft card (SAT may use icon-only button)
+            for fallback_selector in [
+                "[aria-label*='eliminar']", "[aria-label*='Eliminar']",
+                "[title*='eliminar']", "[title*='Eliminar']",
+                "button:has(svg)", "a:has(svg)",
+                "[class*='trash']", "[class*='eliminar']", "[class*='borrar']",
+            ]:
+                try:
+                    loc = page.locator(fallback_selector).first
+                    loc.wait_for(state="visible", timeout=1500)
+                    loc.click()
+                    trash_clicked = True
+                    break
+                except Exception:
+                    continue
+        if not trash_clicked:
+            # Fallback: within draft card (contains "Formularios no enviados"), click small button/link that is not "INICIAR..."
+            try:
+                card = page.get_by_text("Formularios no enviados", exact=False).locator("..").locator("..").locator("..").first
+                trash = card.locator("button, a").filter(has_not=page.get_by_text(re.compile(r"INICIAR.*NUEVA DECLARACIÓN", re.I))).first
+                trash.wait_for(state="visible", timeout=2000)
+                trash.click()
+                trash_clicked = True
+            except Exception:
+                try:
+                    row = page.get_by_text("Formularios no enviados", exact=False).locator("..").locator("..")
+                    trash = row.locator("button, a").filter(has=page.locator("svg, [class*='trash'], [class*='eliminar']")).first
+                    trash.wait_for(state="visible", timeout=2000)
+                    trash.click()
+                    trash_clicked = True
+                except Exception:
+                    pass
+        if not trash_clicked:
+            LOG.warning("Could not find/click draft trash icon")
+            return False
+        page.wait_for_timeout(1000)
+        # Confirmation popup: "¿Deseas eliminar esta declaración?" → click "Sí"
+        try:
+            page.get_by_text("¿Deseas eliminar esta declaración?", exact=False).wait_for(state="visible", timeout=5000)
+        except Exception:
+            LOG.warning("Delete confirmation popup did not appear")
+            return True
+        si_clicked = False
+        if mapping.get("_popup_eliminar_si"):
+            for sel in mapping["_popup_eliminar_si"]:
+                try:
+                    page.locator(sel).first.click(timeout=3000)
+                    si_clicked = True
+                    break
+                except Exception:
+                    continue
+        if not si_clicked:
+            try:
+                page.get_by_role("button", name=re.compile(r"^sí$", re.I)).first.click(timeout=3000)
+                si_clicked = True
+            except Exception:
+                pass
+        if not si_clicked:
+            try:
+                page.get_by_text("sí", exact=True).first.click(timeout=3000)
+                si_clicked = True
+            except Exception:
+                pass
+        if si_clicked:
+            LOG.info("Draft deleted (Sí confirmed); continuing to initial form")
+        page.wait_for_timeout(2000)
+        return True
+    except Exception as e:
+        LOG.warning("Dismiss draft failed: %s", e)
+        return False
+
+
 def open_configuration_form(page: Page, mapping: dict) -> bool:
     """Open 'Configuración de la declaración' by clicking 'Presentar declaración' (pstcdypisr: Ejercicio/Periodicidad/Periodo/Tipo dropdowns appear here). Returns True if clicked."""
     ok = _try_click(page, mapping, "_nav_presentar_declaracion")
@@ -518,12 +635,226 @@ def open_configuration_form(page: Page, mapping: dict) -> bool:
     return ok
 
 
+def transition_initial_to_phase3(page: Page, mapping: dict) -> bool:
+    """After initial form: click SIGUIENTE, wait for loading to finish, then click CERRAR on the pre-fill info pop-up. Returns True if the full sequence succeeded."""
+    if not _try_click(page, mapping, "_btn_siguiente"):
+        LOG.warning("Could not click SIGUIENTE after initial form")
+        return False
+    page.wait_for_timeout(1000)
+    # Wait for "Cargando información" to disappear (variable time)
+    try:
+        loading = page.get_by_text("Cargando información", exact=False)
+        for _ in range(PHASE3_LOADING_MAX_WAIT_SEC):
+            if loading.count() == 0:
+                break
+            try:
+                if not loading.first.is_visible():
+                    break
+            except Exception:
+                break
+            page.wait_for_timeout(1000)
+    except Exception:
+        pass
+    page.wait_for_timeout(500)
+    # Wait for pre-fill pop-up to appear (CERRAR button can take several seconds after loading ends)
+    cerrar_btn = page.get_by_role("button", name=re.compile(r"CERRAR", re.I)).first
+    try:
+        cerrar_btn.wait_for(state="visible", timeout=PHASE3_POPUP_WAIT_FOR_CERRAR_SEC * 1000)
+        LOG.info("Pre-fill pop-up visible, clicking CERRAR")
+    except Exception as e:
+        LOG.warning("Pre-fill pop-up CERRAR button did not appear within %ss: %s", PHASE3_POPUP_WAIT_FOR_CERRAR_SEC, e)
+    cerrar_ok = False
+    try:
+        cerrar_btn.click(timeout=PHASE3_POPUP_CERRAR_CLICK_MS)
+        cerrar_ok = True
+        LOG.info("Clicked CERRAR on pre-fill pop-up")
+    except Exception:
+        pass
+    if not cerrar_ok and mapping.get("_popup_cerrar"):
+        for sel in mapping["_popup_cerrar"]:
+            try:
+                btn = page.locator(sel).first
+                btn.wait_for(state="visible", timeout=PHASE3_POPUP_CERRAR_SELECTOR_MS)
+                btn.click()
+                cerrar_ok = True
+                LOG.info("Clicked CERRAR on pre-fill pop-up (mapping)")
+                break
+            except Exception:
+                continue
+    if not cerrar_ok:
+        try:
+            page.get_by_role("button", name=re.compile(r"CERRAR", re.I)).first.click(timeout=PHASE3_POPUP_CERRAR_CLICK_MS)
+            cerrar_ok = True
+            LOG.info("Clicked CERRAR on pre-fill pop-up (fallback)")
+        except Exception as e:
+            LOG.warning("Could not click CERRAR on pop-up: %s", e)
+    if cerrar_ok:
+        page.wait_for_timeout(1500)
+    return cerrar_ok
+
+
 def open_obligation_isr(page, mapping: dict) -> bool:
-    """Select 'ISR simplificado de confianza. Personas físicas' to open the ISR section (Administración de la declaración). Returns True if clicked."""
+    """Select 'ISR simplificado de confianza. Personas físicas' (checkmark + label) to open the ISR section; then the Ingresos form loads. Returns True if clicked."""
     ok = _try_click(page, mapping, "_select_obligation_isr")
     if ok:
         page.wait_for_timeout(1500)
     return ok
+
+
+def _set_dropdown_by_label(page: Page, label_substring: str, value: str, timeout_ms: int = 5000) -> bool:
+    """Set a <select> that is associated with a label containing label_substring. value is option label (e.g. Sí/No)."""
+    try:
+        loc = page.get_by_label(re.compile(re.escape(label_substring), re.I))
+        if loc.count() == 0:
+            return False
+        first = loc.first
+        first.wait_for(state="visible", timeout=timeout_ms)
+        tag = first.evaluate("el => el.tagName.toLowerCase()")
+        if tag == "select":
+            first.select_option(label=value)
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _get_isr_ingresos_scope(page: Page) -> Page:
+    """Return the page; ISR Ingresos form is a tab panel (id=tab457maincontainer1) on the main page, not an iframe."""
+    return page
+
+
+def _set_dropdown_by_label_scope(scope: Page | Frame, page_for_click: Page, label_substring: str, value: str, timeout_ms: int = 5000) -> bool:
+    """Set a <select> in scope by label containing label_substring. value is option label (e.g. Sí/No)."""
+    try:
+        loc = scope.get_by_label(re.compile(re.escape(label_substring), re.I))
+        if loc.count() == 0:
+            return False
+        first = loc.first
+        first.wait_for(state="visible", timeout=timeout_ms)
+        tag = first.evaluate("el => el.tagName.toLowerCase()")
+        if tag == "select":
+            first.select_option(label=value)
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
+    """Fill ISR simplificado Ingresos form: copropiedad (Sí/No), Descuentos CAPTURAR popup, ingresos a disminuir/adicionales (Sí/No), Total percibidos CAPTURAR popup. See FILL THE FORM ON SAT.pdf pp 25-42."""
+    LOG.info("Filling ISR Ingresos form...")
+    label_map = data.get("label_map") or {}
+    copropiedad = data.get("isr_ingresos_copropiedad") or "No"
+    descuentos_copropiedad = label_map.get("Descuentos devoluciones y bonificaciones de integrantes por copropiedad")
+    if descuentos_copropiedad is None:
+        descuentos_copropiedad = 0
+    ingresos_a_disminuir = data.get("isr_ingresos_a_disminuir") or "No"
+    ingresos_adicionales = data.get("isr_ingresos_adicionales") or "No"
+    importe_total = label_map.get("Total de ingresos acumulados") or label_map.get("Ingresos nominales facturados")
+    if importe_total is None:
+        importe_total = 0
+    try:
+        n = float(importe_total)
+        importe_str = f"{n:,.2f}".replace(",", "")
+    except (TypeError, ValueError):
+        importe_str = str(importe_total)
+    concepto_label = data.get("isr_ingresos_concepto") or "Actividad empresarial"
+
+    page.wait_for_timeout(1200)
+    # Wait for Ingresos tab panel (id=tab457maincontainer1) to be visible
+    scope = _get_isr_ingresos_scope(page)
+    for attempt in range(30):
+        try:
+            scope.locator("#457select7, #tab457maincontainer1").first.wait_for(state="visible", timeout=1000)
+            break
+        except Exception:
+            page.wait_for_timeout(500)
+    else:
+        LOG.warning("ISR Ingresos form (457select7/tab457maincontainer1) not visible after 15s")
+    # 1. ¿Los ingresos fueron obtenidos a través de copropiedad? — dropdown Sí/No (#457select7)
+    # SAT options: value "1"=Sí, "2"=No. Try value first, then label.
+    _si = copropiedad.strip().lower() in ("sí", "si", "yes")
+    si_no_value = "1" if _si else "2"
+    si_no_label = "Sí" if _si else "No"
+    if _try_fill(scope, page, mapping, "_isr_ingresos_copropiedad", si_no_value) or _try_fill(scope, page, mapping, "_isr_ingresos_copropiedad", si_no_label):
+        LOG.info("ISR Ingresos: copropiedad = %s (dropdown)", si_no_label)
+    else:
+        LOG.warning("ISR Ingresos: could not set copropiedad dropdown")
+    page.wait_for_timeout(300)
+    # 2. Total de ingresos efectivamente cobrados - prefilled, skip
+    # 3. Descuentos: "Capturar" is an <a> link in #contenedor-457modal9, not a button
+    try:
+        if _try_click(page, mapping, "_isr_ingresos_capturar_descuentos"):
+            page.wait_for_timeout(1500)
+            try:
+                inp = page.get_by_label(re.compile(r"Descuentos.*integrantes por copropiedad", re.I)).first
+                inp.wait_for(state="visible", timeout=4000)
+                inp.fill(str(descuentos_copropiedad))
+                page.wait_for_timeout(300)
+            except Exception:
+                pass
+            page.get_by_role("button", name=re.compile(r"CERRAR", re.I)).first.click(timeout=3000)
+            LOG.info("ISR Ingresos: Descuentos popup filled and closed")
+        else:
+            LOG.warning("ISR Ingresos: could not click Descuentos Capturar link")
+        page.wait_for_timeout(500)
+    except Exception as e:
+        LOG.warning("ISR Ingresos: Descuentos CAPTURAR/popup failed: %s", e)
+    # 4. ¿Tienes ingresos a disminuir? — dropdown Sí/No (#457select48)
+    _si_d = ingresos_a_disminuir.strip().lower() in ("sí", "si", "yes")
+    si_no_disminuir_val = "1" if _si_d else "2"
+    si_no_disminuir_lbl = "Sí" if _si_d else "No"
+    if _try_fill(scope, page, mapping, "_isr_ingresos_disminuir", si_no_disminuir_val) or _try_fill(scope, page, mapping, "_isr_ingresos_disminuir", si_no_disminuir_lbl):
+        LOG.info("ISR Ingresos: ingresos a disminuir = %s (dropdown)", si_no_disminuir_lbl)
+    else:
+        LOG.warning("ISR Ingresos: could not set ingresos a disminuir dropdown")
+    page.wait_for_timeout(300)
+    # 5. ¿Tienes ingresos adicionales? — dropdown Sí/No (#457select59)
+    _si_a = ingresos_adicionales.strip().lower() in ("sí", "si", "yes")
+    si_no_adicionales_val = "1" if _si_a else "2"
+    si_no_adicionales_lbl = "Sí" if _si_a else "No"
+    if _try_fill(scope, page, mapping, "_isr_ingresos_adicionales", si_no_adicionales_val) or _try_fill(scope, page, mapping, "_isr_ingresos_adicionales", si_no_adicionales_lbl):
+        LOG.info("ISR Ingresos: ingresos adicionales = %s (dropdown)", si_no_adicionales_lbl)
+    else:
+        LOG.warning("ISR Ingresos: could not set ingresos adicionales dropdown")
+    page.wait_for_timeout(300)
+    # 6. Total de ingresos percibidos: "Capturar" is an <a> in #contenedor-457modal70
+    try:
+        if not _try_click(page, mapping, "_isr_ingresos_capturar_total"):
+            raise RuntimeError("Could not click Total percibidos Capturar link")
+        page.wait_for_timeout(1500)
+        try:
+            page.get_by_role("button", name=re.compile(r"AGREGAR", re.I)).first.click(timeout=3000)
+            page.wait_for_timeout(500)
+        except Exception:
+            pass
+        try:
+            concepto_dd = page.get_by_label(re.compile(r"Concepto", re.I)).first
+            concepto_dd.wait_for(state="visible", timeout=4000)
+            concepto_dd.select_option(label=concepto_label)
+            page.wait_for_timeout(200)
+            importe_inp = page.get_by_label(re.compile(r"Importe", re.I)).first
+            importe_inp.wait_for(state="visible", timeout=2000)
+            importe_inp.fill(importe_str)
+            page.wait_for_timeout(200)
+        except Exception:
+            pass
+        if mapping.get("_popup_guardar"):
+            for sel in mapping["_popup_guardar"]:
+                try:
+                    page.locator(sel).first.click(timeout=3000)
+                    break
+                except Exception:
+                    continue
+        else:
+            page.get_by_role("button", name=re.compile(r"GUARDAR", re.I)).first.click(timeout=3000)
+        page.wait_for_timeout(500)
+        page.get_by_role("button", name=re.compile(r"CERRAR", re.I)).first.click(timeout=3000)
+        LOG.info("ISR Ingresos: Total percibidos popup filled and closed")
+        page.wait_for_timeout(500)
+    except Exception as e:
+        LOG.warning("ISR Ingresos: Total percibidos CAPTURAR/popup failed: %s", e)
+    LOG.info("ISR Ingresos form fill completed")
 
 
 def logout_sat(page: Page, mapping: dict) -> None:
@@ -793,7 +1124,9 @@ def fill_initial_form(page: Page, data: dict, mapping: dict) -> None:
 
 
 def fill_obligation_section(page, mapping: dict, label_map: dict, labels: list[str]) -> None:
-    """Fill form fields for given Excel labels (try each label's selectors with value from label_map)."""
+    """Fill form fields for given Excel labels (try each label's selectors with value from label_map).
+    For ISR simplificado de confianza, the Ingresos form should match the field list and order in
+    FILL THE FORM ON SAT.pdf (e.g. pages 25-42). Add or reorder labels/mappings if the PDF differs."""
     for label in labels:
         value = label_map.get(label)
         if value is None:
@@ -901,7 +1234,7 @@ def run(
     Full flow: read Excel → get e.firma → login SAT → navigate → fill initial → fill ISR → fill IVA → check totals → send.
     If test_login=True: only open SAT and perform e.firma login (no DB; use test_* in config). Returns True if login succeeded.
     If test_initial_form=True: login then fill Declaración Provisional initial form (no Excel; use test_year, test_month, test_periodicidad in config).
-    If test_full=True: login + fill initial form only (e.firma from config; initial form from Excel). Stops after initial form.
+    If test_full=True: login + fill initial form + phase 3 (SIGUIENTE, CERRAR, ISR simplificado, fill ISR section). e.firma and data from config/Excel. No IVA/send.
     If test_phase3=True: login + fill initial form + select ISR simplificado de confianza + fill ISR section (Ingresos, etc.). Stops after ISR fill; no IVA/send. Requires --workbook.
     Returns True if declaration was sent (or test step OK), False otherwise. Logs and prints outcome.
     """
@@ -910,14 +1243,9 @@ def run(
     setup_logging(config.get("log_file"))
 
     def _on_sigint(_signum, _frame):
-        global _run_context
-        if _run_context:
-            try:
-                logout_sat(_run_context["page"], _run_context["mapping"])
-                print("Logged out from SAT (Ctrl+C). Exiting.", file=sys.stderr)
-            except Exception as e:
-                LOG.debug("Logout on Ctrl+C failed: %s", e)
-        sys.exit(130)
+        # Do not call any Playwright APIs here — they can block and freeze the terminal.
+        print("Ctrl+C: exiting.", file=sys.stderr)
+        os._exit(130)
 
     signal.signal(signal.SIGINT, _on_sigint)
     base_url = config.get("sat_portal_url", SAT_PORTAL_URL)
@@ -978,6 +1306,7 @@ def run(
                         LOG.info("Opening Configuración de la declaración (Presentar declaración)")
                         if not open_configuration_form(page, mapping):
                             LOG.warning("Could not click Presentar declaración; continuing to fill initial form.")
+                        dismiss_draft_if_present(page, mapping)
                         fill_initial_form(page, data, mapping)
                         LOG.info("Test initial form: initial form step complete. Browser will stay open 10s for inspection.")
                         page.wait_for_timeout(10000)
@@ -997,14 +1326,23 @@ def run(
                     return False
         return False
 
-    # Full run in test mode (up to initial form only): Excel for initial form data, config for e.firma (no DB). No ISR/IVA fill, no send.
+    # Full run in test mode: Excel for initial form + phase 3 (SIGUIENTE, CERRAR, ISR selection, ISR Ingresos fill). Config for e.firma (no DB). No IVA/send.
     if test_full:
         if not workbook_path:
             raise ValueError("Test full run requires --workbook")
-        LOG.info("Test full run: e.firma from config (no DB); initial form from Excel; stopping after initial form (no ISR/IVA/send)")
+        LOG.info("Test full run: e.firma from config (no DB); initial form from Excel; then phase 3 (SIGUIENTE, CERRAR, ISR simplificado, fill ISR); no IVA/send")
         data = read_impuestos(workbook_path)
+        label_map = data["label_map"]
         LOG.info("Period: %s-%s, periodicidad: %s", data.get("year"), data.get("month"), data.get("periodicidad"))
         efirma = get_efirma_from_config(config)
+        isr_labels = [
+            "Ingresos nominales facturados",
+            "Total de ingresos acumulados",
+            "Base gravable del pago provisional",
+            "Impuesto del periodo",
+            "Total ISR retenido del periodo",
+            "ISR a cargo",
+        ]
         for attempt in range(2):
             try:
                 with sync_playwright() as p:
@@ -1017,8 +1355,19 @@ def run(
                         LOG.info("Logged in to SAT")
                         if not open_configuration_form(page, mapping):
                             LOG.warning("Could not click Presentar declaración; continuing to fill initial form.")
+                        dismiss_draft_if_present(page, mapping)
                         fill_initial_form(page, data, mapping)
-                        LOG.info("Test full run: initial form step complete. Browser will stay open 10s for inspection.")
+                        page.wait_for_timeout(400)
+                        LOG.info("Phase 2→3: SIGUIENTE, wait for load, CERRAR pop-up")
+                        if not transition_initial_to_phase3(page, mapping):
+                            LOG.warning("Transition to phase 3 had issues; continuing.")
+                        LOG.info("Phase 3: Selecting ISR simplificado de confianza and filling ISR section")
+                        if not open_obligation_isr(page, mapping):
+                            LOG.warning("Could not click ISR simplificado de confianza")
+                        page.wait_for_timeout(500)
+                        fill_isr_ingresos_form(page, mapping, data)
+                        fill_obligation_section(page, mapping, label_map, isr_labels)
+                        LOG.info("Test full run: initial form + phase 3 complete. Browser will stay open 10s for inspection.")
                         page.wait_for_timeout(10000)
                         return True
                     finally:
@@ -1066,12 +1415,17 @@ def run(
                         LOG.info("Phase 2: Opening Configuración (Presentar declaración), then filling Ejercicio → Periodicidad → Periodo → Tipo")
                         if not open_configuration_form(page, mapping):
                             LOG.warning("Could not click Presentar declaración")
+                        dismiss_draft_if_present(page, mapping)
                         fill_initial_form(page, data, mapping)
-                        page.wait_for_timeout(500)
-                        LOG.info("Phase 3: Selecting ISR simplificado de confianza and filling ISR section")
+                        page.wait_for_timeout(400)
+                        LOG.info("Phase 2→3: Clicking SIGUIENTE, waiting for load, closing pre-fill pop-up (CERRAR)")
+                        if not transition_initial_to_phase3(page, mapping):
+                            LOG.warning("Transition to phase 3 (SIGUIENTE/CERRAR) had issues; continuing.")
+                        LOG.info("Phase 3: Selecting ISR simplificado de confianza and filling ISR section (Ingresos form per PDF pp 25-42)")
                         if not open_obligation_isr(page, mapping):
                             LOG.warning("Could not click ISR simplificado de confianza")
                         page.wait_for_timeout(500)
+                        fill_isr_ingresos_form(page, mapping, data)
                         fill_obligation_section(page, mapping, label_map, isr_labels)
                         LOG.info("Test phase 3 complete (Phase 1 login + Phase 2 initial form + Phase 3 ISR section). Browser will stay open 10s for inspection.")
                         page.wait_for_timeout(10000)
@@ -1115,13 +1469,17 @@ def run(
                     LOG.info("Logged in to SAT")
                     if not open_configuration_form(page, mapping):
                         LOG.warning("Could not click Presentar declaración")
+                    dismiss_draft_if_present(page, mapping)
                     fill_initial_form(page, data, mapping)
-                    page.wait_for_timeout(2000)
-
-                    # Phase 3: Select ISR simplificado de confianza, then fill ISR section (Ingresos tab, etc.)
+                    page.wait_for_timeout(400)
+                    # Phase 2→3: SIGUIENTE, wait for load, click CERRAR on pre-fill pop-up
+                    if not transition_initial_to_phase3(page, mapping):
+                        LOG.warning("Transition to phase 3 (SIGUIENTE/CERRAR) had issues; continuing.")
+                    # Phase 3: Select ISR simplificado de confianza, then fill ISR Ingresos form (per PDF pp 25-42)
                     if not open_obligation_isr(page, mapping):
                         LOG.warning("Could not click ISR simplificado de confianza; continuing to fill ISR fields anyway.")
                     page.wait_for_timeout(500)
+                    fill_isr_ingresos_form(page, mapping, data)
                     isr_labels = [
                         "Ingresos nominales facturados",
                         "Total de ingresos acumulados",
@@ -1191,7 +1549,7 @@ def main() -> None:
     parser.add_argument("--mapping", help="Path to form_field_mapping.json (default: script dir)")
     parser.add_argument("--test-login", action="store_true", help="Test only: open SAT and log in with local .cer/.key and password from config (no DB)")
     parser.add_argument("--test-initial-form", action="store_true", help="Test phase 2: login then fill Declaración Provisional initial form (no Excel; use test_year, test_month, test_periodicidad in config)")
-    parser.add_argument("--test-full", action="store_true", help="Test up to initial form: e.firma from config, initial form from Excel (--workbook or test_workbook_path); stops after filling Ejercicio/Periodicidad/Período/Tipo (no ISR/IVA/send)")
+    parser.add_argument("--test-full", action="store_true", help="Test full: login + initial form + phase 3 (SIGUIENTE, CERRAR, ISR simplificado, fill ISR); e.firma from config, data from Excel (--workbook); no IVA/send")
     parser.add_argument("--test-phase3", action="store_true", help="Test phase 3: login, initial form, select ISR simplificado de confianza, fill ISR section (Ingresos etc.); requires --workbook; stops before IVA/send")
     args = parser.parse_args()
 
