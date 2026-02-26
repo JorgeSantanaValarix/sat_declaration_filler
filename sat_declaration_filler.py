@@ -37,6 +37,7 @@ IVA_RANGE = (33, 58)  # rows 33-58, cols D,E
 TOLERANCE_PESOS = 1
 # Declaración Provisional (pstcdypisr): after login, click "Presentar declaración" to open Configuración de la declaración.
 SAT_PORTAL_URL = "https://pstcdypisr.clouda.sat.gob.mx/"
+RETRY_WAIT_SECONDS = 10  # wait before single retry after error (e.g. SAT 500)
 SP_GET_EFIRMA = "[GET_AUTOMATICTAXDECLARATION_CUSTOMERDATA]"
 LOG = logging.getLogger("sat_declaration_filler")
 
@@ -921,25 +922,32 @@ def run(
     if test_login:
         LOG.info("Test mode: login only (no DB, using test_cer_path / test_key_path / test_password from config)")
         efirma = get_efirma_from_config(config)
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=False)
-            context = browser.new_context(accept_downloads=True)
-            page = context.new_page()
-            _run_context = {"page": page, "mapping": mapping}
+        for attempt in range(2):
             try:
-                login_sat(page, efirma, mapping, base_url)
-                LOG.info("Test login: e.firma login completed. Browser will stay open 10s for inspection.")
-                page.wait_for_timeout(10000)
-                return True
+                with sync_playwright() as p:
+                    browser = p.chromium.launch(headless=False)
+                    context = browser.new_context(accept_downloads=True)
+                    page = context.new_page()
+                    _run_context = {"page": page, "mapping": mapping}
+                    try:
+                        login_sat(page, efirma, mapping, base_url)
+                        LOG.info("Test login: e.firma login completed. Browser will stay open 10s for inspection.")
+                        page.wait_for_timeout(10000)
+                        return True
+                    finally:
+                        logout_sat(page, mapping)
+                        _run_context = None
+                        context.close()
+                        browser.close()
             except Exception as e:
                 LOG.exception("Test login failed")
                 print(str(e), file=sys.stderr)
-                return False
-            finally:
-                logout_sat(page, mapping)
-                _run_context = None
-                context.close()
-                browser.close()
+                if attempt == 0:
+                    LOG.info("Closing and retrying once in %s seconds...", RETRY_WAIT_SECONDS)
+                    time.sleep(RETRY_WAIT_SECONDS)
+                else:
+                    return False
+        return False
 
     if test_initial_form:
         LOG.info("Test mode: login + fill initial Declaración Provisional form (no Excel/DB; using test_* from config)")
@@ -954,29 +962,36 @@ def run(
             month = 1
         data = {"year": int(year), "month": int(month), "periodicidad": int(periodicidad), "tipo_declaracion": "Normal", "label_map": {}}
         LOG.info("Initial form test data: year=%s month=%s periodicidad=%s", data["year"], data["month"], data["periodicidad"])
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=False)
-            context = browser.new_context(accept_downloads=True)
-            page = context.new_page()
-            _run_context = {"page": page, "mapping": mapping}
+        for attempt in range(2):
             try:
-                login_sat(page, efirma, mapping, base_url)
-                LOG.info("Opening Configuración de la declaración (Presentar declaración)")
-                if not open_configuration_form(page, mapping):
-                    LOG.warning("Could not click Presentar declaración; continuing to fill initial form.")
-                fill_initial_form(page, data, mapping)
-                LOG.info("Test initial form: initial form step complete. Browser will stay open 10s for inspection.")
-                page.wait_for_timeout(10000)
-                return True
+                with sync_playwright() as p:
+                    browser = p.chromium.launch(headless=False)
+                    context = browser.new_context(accept_downloads=True)
+                    page = context.new_page()
+                    _run_context = {"page": page, "mapping": mapping}
+                    try:
+                        login_sat(page, efirma, mapping, base_url)
+                        LOG.info("Opening Configuración de la declaración (Presentar declaración)")
+                        if not open_configuration_form(page, mapping):
+                            LOG.warning("Could not click Presentar declaración; continuing to fill initial form.")
+                        fill_initial_form(page, data, mapping)
+                        LOG.info("Test initial form: initial form step complete. Browser will stay open 10s for inspection.")
+                        page.wait_for_timeout(10000)
+                        return True
+                    finally:
+                        logout_sat(page, mapping)
+                        _run_context = None
+                        context.close()
+                        browser.close()
             except Exception as e:
                 LOG.exception("Test initial form failed")
                 print(str(e), file=sys.stderr)
-                return False
-            finally:
-                logout_sat(page, mapping)
-                _run_context = None
-                context.close()
-                browser.close()
+                if attempt == 0:
+                    LOG.info("Closing and retrying once in %s seconds...", RETRY_WAIT_SECONDS)
+                    time.sleep(RETRY_WAIT_SECONDS)
+                else:
+                    return False
+        return False
 
     # Full run in test mode (up to initial form only): Excel for initial form data, config for e.firma (no DB). No ISR/IVA fill, no send.
     if test_full:
@@ -986,29 +1001,36 @@ def run(
         data = read_impuestos(workbook_path)
         LOG.info("Period: %s-%s, periodicidad: %s", data.get("year"), data.get("month"), data.get("periodicidad"))
         efirma = get_efirma_from_config(config)
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=False)
-            context = browser.new_context(accept_downloads=True)
-            page = context.new_page()
-            _run_context = {"page": page, "mapping": mapping}
+        for attempt in range(2):
             try:
-                login_sat(page, efirma, mapping, base_url)
-                LOG.info("Logged in to SAT")
-                if not open_configuration_form(page, mapping):
-                    LOG.warning("Could not click Presentar declaración; continuing to fill initial form.")
-                fill_initial_form(page, data, mapping)
-                LOG.info("Test full run: initial form step complete. Browser will stay open 10s for inspection.")
-                page.wait_for_timeout(10000)
-                return True
+                with sync_playwright() as p:
+                    browser = p.chromium.launch(headless=False)
+                    context = browser.new_context(accept_downloads=True)
+                    page = context.new_page()
+                    _run_context = {"page": page, "mapping": mapping}
+                    try:
+                        login_sat(page, efirma, mapping, base_url)
+                        LOG.info("Logged in to SAT")
+                        if not open_configuration_form(page, mapping):
+                            LOG.warning("Could not click Presentar declaración; continuing to fill initial form.")
+                        fill_initial_form(page, data, mapping)
+                        LOG.info("Test full run: initial form step complete. Browser will stay open 10s for inspection.")
+                        page.wait_for_timeout(10000)
+                        return True
+                    finally:
+                        logout_sat(page, mapping)
+                        _run_context = None
+                        context.close()
+                        browser.close()
             except Exception as e:
                 LOG.exception("Test full run failed")
                 print(str(e), file=sys.stderr)
-                return False
-            finally:
-                logout_sat(page, mapping)
-                _run_context = None
-                context.close()
-                browser.close()
+                if attempt == 0:
+                    LOG.info("Closing and retrying once in %s seconds...", RETRY_WAIT_SECONDS)
+                    time.sleep(RETRY_WAIT_SECONDS)
+                else:
+                    return False
+        return False
 
     # Phase 3 test: login, initial form, select ISR simplificado de confianza, fill ISR section (pages 24–51); stop for inspection.
     if test_phase3:
@@ -1027,36 +1049,43 @@ def run(
             "Total ISR retenido del periodo",
             "ISR a cargo",
         ]
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=False)
-            context = browser.new_context(accept_downloads=True)
-            page = context.new_page()
-            _run_context = {"page": page, "mapping": mapping}
+        for attempt in range(2):
             try:
-                LOG.info("Phase 1: Logging in to SAT (e.firma)")
-                login_sat(page, efirma, mapping, base_url)
-                LOG.info("Phase 2: Opening Configuración (Presentar declaración), then filling Ejercicio → Periodicidad → Periodo → Tipo")
-                if not open_configuration_form(page, mapping):
-                    LOG.warning("Could not click Presentar declaración")
-                fill_initial_form(page, data, mapping)
-                page.wait_for_timeout(500)
-                LOG.info("Phase 3: Selecting ISR simplificado de confianza and filling ISR section")
-                if not open_obligation_isr(page, mapping):
-                    LOG.warning("Could not click ISR simplificado de confianza")
-                page.wait_for_timeout(500)
-                fill_obligation_section(page, mapping, label_map, isr_labels)
-                LOG.info("Test phase 3 complete (Phase 1 login + Phase 2 initial form + Phase 3 ISR section). Browser will stay open 10s for inspection.")
-                page.wait_for_timeout(10000)
-                return True
+                with sync_playwright() as p:
+                    browser = p.chromium.launch(headless=False)
+                    context = browser.new_context(accept_downloads=True)
+                    page = context.new_page()
+                    _run_context = {"page": page, "mapping": mapping}
+                    try:
+                        LOG.info("Phase 1: Logging in to SAT (e.firma)")
+                        login_sat(page, efirma, mapping, base_url)
+                        LOG.info("Phase 2: Opening Configuración (Presentar declaración), then filling Ejercicio → Periodicidad → Periodo → Tipo")
+                        if not open_configuration_form(page, mapping):
+                            LOG.warning("Could not click Presentar declaración")
+                        fill_initial_form(page, data, mapping)
+                        page.wait_for_timeout(500)
+                        LOG.info("Phase 3: Selecting ISR simplificado de confianza and filling ISR section")
+                        if not open_obligation_isr(page, mapping):
+                            LOG.warning("Could not click ISR simplificado de confianza")
+                        page.wait_for_timeout(500)
+                        fill_obligation_section(page, mapping, label_map, isr_labels)
+                        LOG.info("Test phase 3 complete (Phase 1 login + Phase 2 initial form + Phase 3 ISR section). Browser will stay open 10s for inspection.")
+                        page.wait_for_timeout(10000)
+                        return True
+                    finally:
+                        logout_sat(page, mapping)
+                        _run_context = None
+                        context.close()
+                        browser.close()
             except Exception as e:
                 LOG.exception("Test phase 3 failed")
                 print(str(e), file=sys.stderr)
-                return False
-            finally:
-                logout_sat(page, mapping)
-                _run_context = None
-                context.close()
-                browser.close()
+                if attempt == 0:
+                    LOG.info("Closing and retrying once in %s seconds...", RETRY_WAIT_SECONDS)
+                    time.sleep(RETRY_WAIT_SECONDS)
+                else:
+                    return False
+        return False
 
     # Normal flow (DB for e.firma)
     if not workbook_path or company_id is None or branch_id is None:
@@ -1070,75 +1099,80 @@ def run(
     efirma = get_efirma_from_db(company_id, branch_id, config)
     tolerance = config.get("totals_tolerance_pesos", TOLERANCE_PESOS)
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=False)  # headless=False so user can see; set True for automation
-        context = browser.new_context(accept_downloads=True)
-        page = context.new_page()
-        _run_context = {"page": page, "mapping": mapping}
+    for attempt in range(2):
         try:
-            login_sat(page, efirma, mapping, base_url)
-            LOG.info("Logged in to SAT")
-            if not open_configuration_form(page, mapping):
-                LOG.warning("Could not click Presentar declaración")
-            fill_initial_form(page, data, mapping)
-            page.wait_for_timeout(2000)
+            with sync_playwright() as p:
+                browser = p.chromium.launch(headless=False)  # headless=False so user can see; set True for automation
+                context = browser.new_context(accept_downloads=True)
+                page = context.new_page()
+                _run_context = {"page": page, "mapping": mapping}
+                try:
+                    login_sat(page, efirma, mapping, base_url)
+                    LOG.info("Logged in to SAT")
+                    if not open_configuration_form(page, mapping):
+                        LOG.warning("Could not click Presentar declaración")
+                    fill_initial_form(page, data, mapping)
+                    page.wait_for_timeout(2000)
 
-            # Phase 3: Select ISR simplificado de confianza, then fill ISR section (Ingresos tab, etc.)
-            if not open_obligation_isr(page, mapping):
-                LOG.warning("Could not click ISR simplificado de confianza; continuing to fill ISR fields anyway.")
-            page.wait_for_timeout(500)
-            isr_labels = [
-                "Ingresos nominales facturados",
-                "Total de ingresos acumulados",
-                "Base gravable del pago provisional",
-                "Impuesto del periodo",
-                "Total ISR retenido del periodo",
-                "ISR a cargo",
-            ]
-            fill_obligation_section(page, mapping, label_map, isr_labels)
-            page.wait_for_timeout(1500)
+                    # Phase 3: Select ISR simplificado de confianza, then fill ISR section (Ingresos tab, etc.)
+                    if not open_obligation_isr(page, mapping):
+                        LOG.warning("Could not click ISR simplificado de confianza; continuing to fill ISR fields anyway.")
+                    page.wait_for_timeout(500)
+                    isr_labels = [
+                        "Ingresos nominales facturados",
+                        "Total de ingresos acumulados",
+                        "Base gravable del pago provisional",
+                        "Impuesto del periodo",
+                        "Total ISR retenido del periodo",
+                        "ISR a cargo",
+                    ]
+                    fill_obligation_section(page, mapping, label_map, isr_labels)
+                    page.wait_for_timeout(1500)
 
-            # Fill IVA section
-            iva_labels = [
-                "Actividades gravadas a la tasa del 16%",
-                "Actividades gravadas a la tasa del 8%",
-                "Actividades gravadas a la tasa del 0% otros",
-                "Actividades exentas",
-                "Actividades no objeto de impuesto",
-                "IVA a cargo a la tasa del 16% y 8%",
-                "Total IVA Trasladado",
-                "IVA retenido a favor",
-                "IVA acreditable del periodo",
-                "Cantidad a cargo",
-                "IVA a cargo",
-                "IVA a favor",
-            ]
-            fill_obligation_section(page, mapping, label_map, iva_labels)
-            page.wait_for_timeout(2000)
+                    # Fill IVA section
+                    iva_labels = [
+                        "Actividades gravadas a la tasa del 16%",
+                        "Actividades gravadas a la tasa del 8%",
+                        "Actividades gravadas a la tasa del 0% otros",
+                        "Actividades exentas",
+                        "Actividades no objeto de impuesto",
+                        "IVA a cargo a la tasa del 16% y 8%",
+                        "Total IVA Trasladado",
+                        "IVA retenido a favor",
+                        "IVA acreditable del periodo",
+                        "Cantidad a cargo",
+                        "IVA a cargo",
+                        "IVA a favor",
+                    ]
+                    fill_obligation_section(page, mapping, label_map, iva_labels)
+                    page.wait_for_timeout(2000)
 
-            ok, msg = check_totals(page, data, mapping, tolerance)
-            LOG.info(msg)
-            if not ok:
-                LOG.error("Totals check failed. Not sending declaration.")
-                print(msg, file=sys.stderr)
-                return False
+                    ok, msg = check_totals(page, data, mapping, tolerance)
+                    LOG.info(msg)
+                    if not ok:
+                        LOG.error("Totals check failed. Not sending declaration.")
+                        print(msg, file=sys.stderr)
+                        return False
 
-            if not send_declaration(page, mapping):
-                LOG.warning("Could not find/click Enviar declaración button")
-                return False
-            page.wait_for_timeout(3000)
-            LOG.info("Declaration send clicked; complete any remaining steps in the browser.")
-            return True
+                    if not send_declaration(page, mapping):
+                        LOG.warning("Could not find/click Enviar declaración button")
+                        return False
+                    page.wait_for_timeout(3000)
+                    LOG.info("Declaration send clicked; complete any remaining steps in the browser.")
+                    return True
+                finally:
+                    logout_sat(page, mapping)
+                    _run_context = None
+                    context.close()
+                    browser.close()
         except Exception as e:
             LOG.exception("Error during run")
             print(str(e), file=sys.stderr)
-            return False
-        finally:
-            logout_sat(page, mapping)
-            _run_context = None
-            context.close()
-            browser.close()
-
+            if attempt == 0:
+                LOG.info("Closing and retrying once in %s seconds...", RETRY_WAIT_SECONDS)
+                time.sleep(RETRY_WAIT_SECONDS)
+            else:
+                return False
     return False
 
 
