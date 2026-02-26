@@ -12,10 +12,14 @@ import json
 import logging
 import os
 import re
+import signal
 import sys
 import time
 from datetime import datetime
 from pathlib import Path
+
+# Used by SIGINT handler to logout from SAT when user presses Ctrl+C.
+_run_context: dict | None = None
 
 import openpyxl
 
@@ -521,6 +525,20 @@ def open_obligation_isr(page, mapping: dict) -> bool:
     return ok
 
 
+def logout_sat(page: Page, mapping: dict) -> None:
+    """Click 'Cerrar' (next to Inicio) in the SAT nav bar to log out. Safe to call if not logged in or element missing."""
+    try:
+        if _try_click(page, mapping, "_nav_cerrar"):
+            LOG.info("Logged out from SAT (Cerrar clicked)")
+            page.wait_for_timeout(1500)
+        else:
+            page.get_by_role("link", name=re.compile(r"Cerrar", re.I)).first.click(timeout=2000)
+            page.wait_for_timeout(1500)
+            LOG.info("Logged out from SAT (Cerrar clicked via fallback)")
+    except Exception as e:
+        LOG.debug("Logout (Cerrar) skipped or failed: %s", e)
+
+
 def _debug_ts() -> str:
     """Timestamp for debug prints (same format as login_sat)."""
     now = datetime.now()
@@ -886,8 +904,20 @@ def run(
     mapping = load_mapping(mapping_path)
     setup_logging(config.get("log_file"))
 
+    def _on_sigint(_signum, _frame):
+        global _run_context
+        if _run_context:
+            try:
+                logout_sat(_run_context["page"], _run_context["mapping"])
+                print("Logged out from SAT (Ctrl+C). Exiting.", file=sys.stderr)
+            except Exception as e:
+                LOG.debug("Logout on Ctrl+C failed: %s", e)
+        sys.exit(130)
+
+    signal.signal(signal.SIGINT, _on_sigint)
     base_url = config.get("sat_portal_url", SAT_PORTAL_URL)
 
+    global _run_context
     if test_login:
         LOG.info("Test mode: login only (no DB, using test_cer_path / test_key_path / test_password from config)")
         efirma = get_efirma_from_config(config)
@@ -895,6 +925,7 @@ def run(
             browser = p.chromium.launch(headless=False)
             context = browser.new_context(accept_downloads=True)
             page = context.new_page()
+            _run_context = {"page": page, "mapping": mapping}
             try:
                 login_sat(page, efirma, mapping, base_url)
                 LOG.info("Test login: e.firma login completed. Browser will stay open 10s for inspection.")
@@ -905,6 +936,8 @@ def run(
                 print(str(e), file=sys.stderr)
                 return False
             finally:
+                logout_sat(page, mapping)
+                _run_context = None
                 context.close()
                 browser.close()
 
@@ -925,6 +958,7 @@ def run(
             browser = p.chromium.launch(headless=False)
             context = browser.new_context(accept_downloads=True)
             page = context.new_page()
+            _run_context = {"page": page, "mapping": mapping}
             try:
                 login_sat(page, efirma, mapping, base_url)
                 LOG.info("Opening Configuración de la declaración (Presentar declaración)")
@@ -939,6 +973,8 @@ def run(
                 print(str(e), file=sys.stderr)
                 return False
             finally:
+                logout_sat(page, mapping)
+                _run_context = None
                 context.close()
                 browser.close()
 
@@ -954,20 +990,23 @@ def run(
             browser = p.chromium.launch(headless=False)
             context = browser.new_context(accept_downloads=True)
             page = context.new_page()
+            _run_context = {"page": page, "mapping": mapping}
             try:
                 login_sat(page, efirma, mapping, base_url)
                 LOG.info("Logged in to SAT")
                 if not open_configuration_form(page, mapping):
                     LOG.warning("Could not click Presentar declaración; continuing to fill initial form.")
                 fill_initial_form(page, data, mapping)
-                LOG.info("Test full run: initial form step complete. Browser will stay open 60s for inspection.")
-                page.wait_for_timeout(60000)
+                LOG.info("Test full run: initial form step complete. Browser will stay open 10s for inspection.")
+                page.wait_for_timeout(10000)
                 return True
             except Exception as e:
                 LOG.exception("Test full run failed")
                 print(str(e), file=sys.stderr)
                 return False
             finally:
+                logout_sat(page, mapping)
+                _run_context = None
                 context.close()
                 browser.close()
 
@@ -992,6 +1031,7 @@ def run(
             browser = p.chromium.launch(headless=False)
             context = browser.new_context(accept_downloads=True)
             page = context.new_page()
+            _run_context = {"page": page, "mapping": mapping}
             try:
                 LOG.info("Phase 1: Logging in to SAT (e.firma)")
                 login_sat(page, efirma, mapping, base_url)
@@ -1005,14 +1045,16 @@ def run(
                     LOG.warning("Could not click ISR simplificado de confianza")
                 page.wait_for_timeout(500)
                 fill_obligation_section(page, mapping, label_map, isr_labels)
-                LOG.info("Test phase 3 complete (Phase 1 login + Phase 2 initial form + Phase 3 ISR section). Browser will stay open 60s for inspection.")
-                page.wait_for_timeout(60000)
+                LOG.info("Test phase 3 complete (Phase 1 login + Phase 2 initial form + Phase 3 ISR section). Browser will stay open 10s for inspection.")
+                page.wait_for_timeout(10000)
                 return True
             except Exception as e:
                 LOG.exception("Test phase 3 failed")
                 print(str(e), file=sys.stderr)
                 return False
             finally:
+                logout_sat(page, mapping)
+                _run_context = None
                 context.close()
                 browser.close()
 
@@ -1032,6 +1074,7 @@ def run(
         browser = p.chromium.launch(headless=False)  # headless=False so user can see; set True for automation
         context = browser.new_context(accept_downloads=True)
         page = context.new_page()
+        _run_context = {"page": page, "mapping": mapping}
         try:
             login_sat(page, efirma, mapping, base_url)
             LOG.info("Logged in to SAT")
@@ -1091,6 +1134,8 @@ def run(
             print(str(e), file=sys.stderr)
             return False
         finally:
+            logout_sat(page, mapping)
+            _run_context = None
             context.close()
             browser.close()
 
