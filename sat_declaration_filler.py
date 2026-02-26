@@ -810,9 +810,32 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
             page.wait_for_timeout(1500)
             descuentos_value = str(descuentos_copropiedad)
             filled = False
+            # Wait for popup title so we scope only the modal (avoid main-page labels)
             try:
-                inp = page.get_by_label(re.compile(r"Descuentos.*integrantes por copropiedad", re.I)).first
+                page.get_by_text("Devoluciones, descuentos y bonificaciones facturadas", exact=False).first.wait_for(state="visible", timeout=4000)
+            except Exception:
+                pass
+            page.wait_for_timeout(300)
+            # Scope: dialog role, or modal class, or container that has the popup title
+            dialog = None
+            for try_dialog in [
+                lambda: page.get_by_role("dialog").first,
+                lambda: page.locator(".modal, [role='dialog']").first,
+                lambda: page.get_by_text("Devoluciones, descuentos y bonificaciones facturadas", exact=False).first.locator("xpath=ancestor::*[contains(@class,'modal') or contains(@class,'dialog') or @role='dialog'][1]"),
+            ]:
+                try:
+                    d = try_dialog()
+                    d.wait_for(state="visible", timeout=1500)
+                    dialog = d
+                    break
+                except Exception:
+                    continue
+            if dialog is None:
+                dialog = page
+            try:
+                inp = dialog.get_by_label(re.compile(r"Descuentos.*integrantes por copropiedad", re.I)).first
                 inp.wait_for(state="visible", timeout=3000)
+                inp.click()
                 inp.clear()
                 inp.fill(descuentos_value)
                 filled = True
@@ -820,17 +843,18 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
                 pass
             if not filled:
                 try:
-                    label_el = page.get_by_text(re.compile(r"Descuentos.*integrantes por copropiedad", re.I)).first
+                    label_el = dialog.get_by_text(re.compile(r"integrantes por copropiedad", re.I)).first
                     label_el.wait_for(state="visible", timeout=3000)
                     for xpath in [
-                        "xpath=(ancestor::tr[1])//input",
                         "xpath=((ancestor::td | ancestor::th)[1])/following-sibling::*//input",
+                        "xpath=(ancestor::tr[1])//input",
                         "xpath=following-sibling::*//input",
                         "xpath=..//input",
                     ]:
                         try:
                             inp = label_el.locator(xpath).first
                             inp.wait_for(state="visible", timeout=1000)
+                            inp.click()
                             inp.clear()
                             inp.fill(descuentos_value)
                             filled = True
@@ -841,11 +865,35 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
                     pass
             if not filled:
                 try:
-                    inp = page.locator("[role='dialog'] input, .modal input").first
-                    inp.wait_for(state="visible", timeout=2000)
+                    label_el = dialog.get_by_text(re.compile(r"Descuentos.*de integrantes por copropiedad", re.I)).first
+                    label_el.wait_for(state="visible", timeout=2000)
+                    inp = label_el.locator("xpath=((ancestor::td | ancestor::th)[1])/following-sibling::*//input").first
+                    inp.wait_for(state="visible", timeout=1000)
+                    inp.click()
                     inp.clear()
                     inp.fill(descuentos_value)
                     filled = True
+                except Exception:
+                    pass
+            if not filled:
+                # Last resort: in the modal, the second visible input is often "integrantes por copropiedad" (first is "amparadas por comprobantes")
+                try:
+                    modal_inputs = dialog.locator("input[type='text'], input[type='number'], input:not([type])")
+                    n = modal_inputs.count()
+                    for idx in range(n):
+                        inp = modal_inputs.nth(idx)
+                        try:
+                            inp.wait_for(state="visible", timeout=500)
+                            # Check if this input is in a row that contains "integrantes por copropiedad"
+                            row = inp.locator("xpath=ancestor::tr[1] | ancestor::div[contains(@class,'row')][1]")
+                            if row.count() > 0 and row.first.get_by_text("integrantes por copropiedad").count() > 0:
+                                inp.click()
+                                inp.clear()
+                                inp.fill(descuentos_value)
+                                filled = True
+                                break
+                        except Exception:
+                            continue
                 except Exception:
                     pass
             if not filled:
