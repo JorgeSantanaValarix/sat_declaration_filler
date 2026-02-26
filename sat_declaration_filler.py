@@ -511,22 +511,21 @@ def navigate_to_declaration(page, mapping: dict) -> None:
     page.wait_for_timeout(3000)
 
 
-DRAFT_PAGE_WAIT_MS = 10000  # wait up to this long for draft text to appear after login
-DRAFT_POLL_MS = 500  # poll page body every this many ms for draft text
+DRAFT_PAGE_WAIT_MS = 2000   # max 1–2 sec to detect draft text
+DRAFT_POLL_MS = 100          # poll page body every 100 ms
+DRAFT_INITIAL_WAIT_MS = 100  # minimal wait before first check
 
 
 def dismiss_draft_if_present(page: Page, mapping: dict) -> bool:
     """If 'Formulario no concluido' is shown (saved draft), click trash icon and confirm 'Sí' to delete; then we can continue to initial form. Returns True if a draft was dismissed."""
     LOG.info("Checking for draft declaration (Formulario no concluido) after Presentar declaración, before filling initial form...")
-    # Give the post-login page time to render.
-    page.wait_for_timeout(2000)
-    # Poll page body text for draft phrases (avoids relying on a single element's visibility).
+    page.wait_for_timeout(DRAFT_INITIAL_WAIT_MS)
     draft_markers = ("formulario no concluido", "formularios no enviados")
     t_end = (time.perf_counter() * 1000) + DRAFT_PAGE_WAIT_MS
     draft_found = False
     while (time.perf_counter() * 1000) < t_end:
         try:
-            body = (page.locator("body").inner_text(timeout=3000) or "").lower()
+            body = (page.locator("body").inner_text(timeout=2000) or "").lower()
             if any(m in body for m in draft_markers):
                 draft_found = True
                 break
@@ -544,14 +543,13 @@ def dismiss_draft_if_present(page: Page, mapping: dict) -> bool:
             for sel in mapping["_draft_trash"]:
                 try:
                     loc = page.locator(sel).first
-                    loc.wait_for(state="visible", timeout=3000)
+                    loc.wait_for(state="visible", timeout=1000)
                     loc.click()
                     trash_clicked = True
                     break
                 except Exception:
                     continue
         if not trash_clicked:
-            # Fallback: find delete/trash control in draft card (SAT may use icon-only button)
             for fallback_selector in [
                 "[aria-label*='eliminar']", "[aria-label*='Eliminar']",
                 "[title*='eliminar']", "[title*='Eliminar']",
@@ -560,25 +558,24 @@ def dismiss_draft_if_present(page: Page, mapping: dict) -> bool:
             ]:
                 try:
                     loc = page.locator(fallback_selector).first
-                    loc.wait_for(state="visible", timeout=1500)
+                    loc.wait_for(state="visible", timeout=800)
                     loc.click()
                     trash_clicked = True
                     break
                 except Exception:
                     continue
         if not trash_clicked:
-            # Fallback: within draft card (contains "Formularios no enviados"), click small button/link that is not "INICIAR..."
             try:
                 card = page.get_by_text("Formularios no enviados", exact=False).locator("..").locator("..").locator("..").first
                 trash = card.locator("button, a").filter(has_not=page.get_by_text(re.compile(r"INICIAR.*NUEVA DECLARACIÓN", re.I))).first
-                trash.wait_for(state="visible", timeout=2000)
+                trash.wait_for(state="visible", timeout=1000)
                 trash.click()
                 trash_clicked = True
             except Exception:
                 try:
                     row = page.get_by_text("Formularios no enviados", exact=False).locator("..").locator("..")
                     trash = row.locator("button, a").filter(has=page.locator("svg, [class*='trash'], [class*='eliminar']")).first
-                    trash.wait_for(state="visible", timeout=2000)
+                    trash.wait_for(state="visible", timeout=1000)
                     trash.click()
                     trash_clicked = True
                 except Exception:
@@ -586,10 +583,9 @@ def dismiss_draft_if_present(page: Page, mapping: dict) -> bool:
         if not trash_clicked:
             LOG.warning("Could not find/click draft trash icon")
             return False
-        page.wait_for_timeout(1000)
-        # Confirmation popup: "¿Deseas eliminar esta declaración?" → click "Sí"
+        page.wait_for_timeout(200)
         try:
-            page.get_by_text("¿Deseas eliminar esta declaración?", exact=False).wait_for(state="visible", timeout=5000)
+            page.get_by_text("¿Deseas eliminar esta declaración?", exact=False).wait_for(state="visible", timeout=1000)
         except Exception:
             LOG.warning("Delete confirmation popup did not appear")
             return True
@@ -597,26 +593,26 @@ def dismiss_draft_if_present(page: Page, mapping: dict) -> bool:
         if mapping.get("_popup_eliminar_si"):
             for sel in mapping["_popup_eliminar_si"]:
                 try:
-                    page.locator(sel).first.click(timeout=3000)
+                    page.locator(sel).first.click(timeout=1000)
                     si_clicked = True
                     break
                 except Exception:
                     continue
         if not si_clicked:
             try:
-                page.get_by_role("button", name=re.compile(r"^sí$", re.I)).first.click(timeout=3000)
+                page.get_by_role("button", name=re.compile(r"^sí$", re.I)).first.click(timeout=1000)
                 si_clicked = True
             except Exception:
                 pass
         if not si_clicked:
             try:
-                page.get_by_text("sí", exact=True).first.click(timeout=3000)
+                page.get_by_text("sí", exact=True).first.click(timeout=1000)
                 si_clicked = True
             except Exception:
                 pass
         if si_clicked:
             LOG.info("Draft deleted (Sí confirmed); continuing to initial form")
-        page.wait_for_timeout(2000)
+        page.wait_for_timeout(300)
         return True
     except Exception as e:
         LOG.warning("Dismiss draft failed: %s", e)
@@ -624,12 +620,12 @@ def dismiss_draft_if_present(page: Page, mapping: dict) -> bool:
 
 
 def open_configuration_form(page: Page, mapping: dict) -> bool:
-    """Open 'Configuración de la declaración' by clicking 'Presentar declaración' (pstcdypisr: Ejercicio/Periodicidad/Periodo/Tipo dropdowns appear here). Returns True if clicked."""
+    """Open 'Configuración de la declaración' by clicking 'Presentar declaración'. If draft page loads (no select), avoid long wait so draft check runs quickly."""
     ok = _try_click(page, mapping, "_nav_presentar_declaracion")
     if ok:
-        page.wait_for_timeout(2000)
+        page.wait_for_timeout(1000)
         try:
-            page.locator("select").first.wait_for(state="visible", timeout=10000)
+            page.locator("select").first.wait_for(state="visible", timeout=2000)
         except Exception:
             pass
     return ok
@@ -723,6 +719,27 @@ def _get_isr_ingresos_scope(page: Page) -> Page:
     return page
 
 
+def _click_capturar_next_to_label(page: Page, label_substring: str) -> bool:
+    """Find the label containing label_substring, then click the CAPTURAR link/button in the same row or container. Returns True if clicked."""
+    try:
+        label_el = page.get_by_text(re.compile(re.escape(label_substring), re.I)).first
+        label_el.wait_for(state="visible", timeout=5000)
+    except Exception:
+        return False
+    for i in range(1, 10):
+        try:
+            container = label_el.locator(f"xpath=(ancestor::*)[{i}]")
+            if container.count() == 0:
+                break
+            capturar = container.first.locator("a, button").filter(has_text=re.compile(r"CAPTURAR", re.I)).first
+            capturar.wait_for(state="visible", timeout=1500)
+            capturar.click()
+            return True
+        except Exception:
+            continue
+    return False
+
+
 def _set_dropdown_by_label_scope(scope: Page | Frame, page_for_click: Page, label_substring: str, value: str, timeout_ms: int = 5000) -> bool:
     """Set a <select> in scope by label containing label_substring. value is option label (e.g. Sí/No)."""
     try:
@@ -761,67 +778,111 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
     concepto_label = data.get("isr_ingresos_concepto") or "Actividad empresarial"
 
     page.wait_for_timeout(1200)
-    # Wait for Ingresos tab panel (id=tab457maincontainer1) to be visible
+    # Wait for Ingresos form by label text (same approach as phase 2), not by fixed IDs
     scope = _get_isr_ingresos_scope(page)
-    for attempt in range(30):
+    try:
+        scope.get_by_text("copropiedad", exact=False).first.wait_for(state="visible", timeout=20000)
+    except Exception:
         try:
-            scope.locator("#457select7, #tab457maincontainer1").first.wait_for(state="visible", timeout=1000)
-            break
+            scope.get_by_text("ingresos fueron obtenidos", exact=False).first.wait_for(state="visible", timeout=3000)
         except Exception:
-            page.wait_for_timeout(500)
-    else:
-        LOG.warning("ISR Ingresos form (457select7/tab457maincontainer1) not visible after 15s")
-    # 1. ¿Los ingresos fueron obtenidos a través de copropiedad? — dropdown Sí/No (#457select7)
-    # SAT options: value "1"=Sí, "2"=No. Try value first, then label.
+            LOG.warning("ISR Ingresos form (label 'copropiedad') not visible after 20s")
+    # 1. ¿Los ingresos fueron obtenidos a través de copropiedad? — use unique label (avoid matching "integrantes por copropiedad" in Descuentos)
     _si = copropiedad.strip().lower() in ("sí", "si", "yes")
-    si_no_value = "1" if _si else "2"
     si_no_label = "Sí" if _si else "No"
-    if _try_fill(scope, page, mapping, "_isr_ingresos_copropiedad", si_no_value) or _try_fill(scope, page, mapping, "_isr_ingresos_copropiedad", si_no_label):
+    copropiedad_ok = _fill_select_next_to_label(scope, page, "ingresos fueron obtenidos a través de copropiedad", si_no_label, mapping=None, initial_dropdown_key=None)
+    if not copropiedad_ok:
+        copropiedad_ok = _set_dropdown_by_label_scope(scope, page, "ingresos fueron obtenidos a través de copropiedad", si_no_label, timeout_ms=4000)
+    if copropiedad_ok:
         LOG.info("ISR Ingresos: copropiedad = %s (dropdown)", si_no_label)
     else:
         LOG.warning("ISR Ingresos: could not set copropiedad dropdown")
     page.wait_for_timeout(300)
     # 2. Total de ingresos efectivamente cobrados - prefilled, skip
-    # 3. Descuentos: "Capturar" is an <a> link in #contenedor-457modal9, not a button
+    # 3. Descuentos, devoluciones y bonificaciones: press CAPTURAR next to field → popup → fill *Descuentos...integrantes por copropiedad → CERRAR
     try:
-        if _try_click(page, mapping, "_isr_ingresos_capturar_descuentos"):
+        capturar_clicked = _try_click(page, mapping, "_isr_ingresos_capturar_descuentos")
+        if not capturar_clicked:
+            capturar_clicked = _click_capturar_next_to_label(page, "Descuentos, devoluciones y bonificaciones")
+        if not capturar_clicked:
+            capturar_clicked = _click_capturar_next_to_label(page, "Descuentos")
+        if capturar_clicked:
             page.wait_for_timeout(1500)
+            descuentos_value = str(descuentos_copropiedad)
+            filled = False
             try:
                 inp = page.get_by_label(re.compile(r"Descuentos.*integrantes por copropiedad", re.I)).first
-                inp.wait_for(state="visible", timeout=4000)
-                inp.fill(str(descuentos_copropiedad))
-                page.wait_for_timeout(300)
+                inp.wait_for(state="visible", timeout=3000)
+                inp.clear()
+                inp.fill(descuentos_value)
+                filled = True
             except Exception:
                 pass
+            if not filled:
+                try:
+                    label_el = page.get_by_text(re.compile(r"Descuentos.*integrantes por copropiedad", re.I)).first
+                    label_el.wait_for(state="visible", timeout=3000)
+                    for xpath in [
+                        "xpath=(ancestor::tr[1])//input",
+                        "xpath=((ancestor::td | ancestor::th)[1])/following-sibling::*//input",
+                        "xpath=following-sibling::*//input",
+                        "xpath=..//input",
+                    ]:
+                        try:
+                            inp = label_el.locator(xpath).first
+                            inp.wait_for(state="visible", timeout=1000)
+                            inp.clear()
+                            inp.fill(descuentos_value)
+                            filled = True
+                            break
+                        except Exception:
+                            continue
+                except Exception:
+                    pass
+            if not filled:
+                try:
+                    inp = page.locator("[role='dialog'] input, .modal input").first
+                    inp.wait_for(state="visible", timeout=2000)
+                    inp.clear()
+                    inp.fill(descuentos_value)
+                    filled = True
+                except Exception:
+                    pass
+            if not filled:
+                LOG.warning("ISR Ingresos: could not find Descuentos popup textbox (*Descuentos...integrantes por copropiedad)")
+            page.wait_for_timeout(300)
             page.get_by_role("button", name=re.compile(r"CERRAR", re.I)).first.click(timeout=3000)
             LOG.info("ISR Ingresos: Descuentos popup filled and closed")
         else:
-            LOG.warning("ISR Ingresos: could not click Descuentos Capturar link")
+            LOG.warning("ISR Ingresos: could not click Descuentos CAPTURAR link")
         page.wait_for_timeout(500)
     except Exception as e:
         LOG.warning("ISR Ingresos: Descuentos CAPTURAR/popup failed: %s", e)
-    # 4. ¿Tienes ingresos a disminuir? — dropdown Sí/No (#457select48)
+    # 4. ¿Tienes ingresos a disminuir? — find dropdown by label (phase-2 style)
     _si_d = ingresos_a_disminuir.strip().lower() in ("sí", "si", "yes")
-    si_no_disminuir_val = "1" if _si_d else "2"
     si_no_disminuir_lbl = "Sí" if _si_d else "No"
-    if _try_fill(scope, page, mapping, "_isr_ingresos_disminuir", si_no_disminuir_val) or _try_fill(scope, page, mapping, "_isr_ingresos_disminuir", si_no_disminuir_lbl):
+    if _fill_select_next_to_label(scope, page, "ingresos a disminuir", si_no_disminuir_lbl, mapping=None, initial_dropdown_key=None):
         LOG.info("ISR Ingresos: ingresos a disminuir = %s (dropdown)", si_no_disminuir_lbl)
     else:
         LOG.warning("ISR Ingresos: could not set ingresos a disminuir dropdown")
     page.wait_for_timeout(300)
-    # 5. ¿Tienes ingresos adicionales? — dropdown Sí/No (#457select59)
+    # 5. ¿Tienes ingresos adicionales? — find dropdown by label (phase-2 style)
     _si_a = ingresos_adicionales.strip().lower() in ("sí", "si", "yes")
-    si_no_adicionales_val = "1" if _si_a else "2"
     si_no_adicionales_lbl = "Sí" if _si_a else "No"
-    if _try_fill(scope, page, mapping, "_isr_ingresos_adicionales", si_no_adicionales_val) or _try_fill(scope, page, mapping, "_isr_ingresos_adicionales", si_no_adicionales_lbl):
+    if _fill_select_next_to_label(scope, page, "ingresos adicionales", si_no_adicionales_lbl, mapping=None, initial_dropdown_key=None):
         LOG.info("ISR Ingresos: ingresos adicionales = %s (dropdown)", si_no_adicionales_lbl)
     else:
         LOG.warning("ISR Ingresos: could not set ingresos adicionales dropdown")
     page.wait_for_timeout(300)
-    # 6. Total de ingresos percibidos: "Capturar" is an <a> in #contenedor-457modal70
+    # 6. Total de ingresos percibidos por la actividad: press CAPTURAR → popup → AGREGAR → Concepto → Importe → GUARDAR → CERRAR
     try:
-        if not _try_click(page, mapping, "_isr_ingresos_capturar_total"):
-            raise RuntimeError("Could not click Total percibidos Capturar link")
+        capturar_clicked = _try_click(page, mapping, "_isr_ingresos_capturar_total")
+        if not capturar_clicked:
+            capturar_clicked = _click_capturar_next_to_label(page, "Total de ingresos percibidos por la actividad")
+        if not capturar_clicked:
+            capturar_clicked = _click_capturar_next_to_label(page, "Total de ingresos percibidos")
+        if not capturar_clicked:
+            raise RuntimeError("Could not click Total percibidos CAPTURAR link")
         page.wait_for_timeout(1500)
         try:
             page.get_by_role("button", name=re.compile(r"AGREGAR", re.I)).first.click(timeout=3000)
@@ -967,33 +1028,45 @@ def _fill_select_next_to_label(
             return False
 
     def resolve_dropdown_from_label(label_el):
-        """Return the <select> element for this label (same cell, next cell, row, or parent). Returns None if not found."""
-        sel = label_el.locator("xpath=(ancestor::*[.//select and count(descendant::select)=1])[1]//select")
-        if sel.count() == 0:
-            sel = label_el.locator("xpath=((ancestor::td | ancestor::th)[1])//select")
-        if sel.count() == 0:
-            sel = label_el.locator("xpath=((ancestor::td | ancestor::th)[1])/following-sibling::*[1]//select")
-        if sel.count() == 0:
-            sel = label_el.locator("xpath=ancestor::tr[1]//select")
-        if sel.count() == 0:
-            sel = label_el.locator("xpath=..").locator("select")
-        if sel.count() == 0:
+        """Return a visible <select> near the label (prefer dropdown to the right of label; skip hidden selects)."""
+        def first_visible_select(loc):
+            if loc.count() == 0:
+                return None
+            for i in range(loc.count()):
+                try:
+                    el = loc.nth(i)
+                    el.wait_for(state="visible", timeout=400)
+                    return el
+                except Exception:
+                    continue
             return None
-        if sel.count() > 1:
-            try:
-                idx = label_el.evaluate("""el => {
-                    const row = el.closest('tr');
-                    if (!row) return 0;
-                    const selects = Array.from(row.querySelectorAll('select'));
-                    for (let i = 0; i < selects.length; i++) {
-                        if ((selects[i].compareDocumentPosition(el) & Node.DOCUMENT_POSITION_PRECEDING) !== 0) return i;
-                    }
-                    return 0;
-                }""")
-                return label_el.locator("xpath=ancestor::tr[1]//select").nth(idx)
-            except Exception:
-                return sel.first
-        return sel.first
+        # 1) Prefer select in the next cell to the right (dropdown to the right of label)
+        sel = label_el.locator("xpath=((ancestor::td | ancestor::th)[1])/following-sibling::*[1]//select")
+        out = first_visible_select(sel)
+        if out is not None:
+            return out
+        # 2) Select in same row (tr); pick first visible (phase-2 style)
+        sel = label_el.locator("xpath=ancestor::tr[1]//select")
+        out = first_visible_select(sel)
+        if out is not None:
+            return out
+        # 3) Same cell
+        sel = label_el.locator("xpath=((ancestor::td | ancestor::th)[1])//select")
+        out = first_visible_select(sel)
+        if out is not None:
+            return out
+        # 4) Ancestor with single select
+        sel = label_el.locator("xpath=(ancestor::*[.//select and count(descendant::select)=1])[1]//select")
+        out = first_visible_select(sel)
+        if out is not None:
+            return out
+        sel = label_el.locator("xpath=..").locator("select")
+        out = first_visible_select(sel)
+        if out is not None:
+            return out
+        if sel.count() > 0:
+            return sel.first
+        return None
 
     # Locate dropdown: try mapping first when provided (fast id/selectors); else resolve by label (slow xpath).
     dropdown = None
