@@ -448,10 +448,29 @@ def login_sat(page, efirma: dict, mapping: dict, base_url: str = SAT_PORTAL_URL)
     else:
         print(f"{_ts()} [{_elapsed()}s] Enviar pressed")
     page.wait_for_load_state("domcontentloaded")
-    # Wait for SAT to navigate away from e.firma (post-login page to load) before we proceed.
+    # Wait for SAT post-login page; detect HTTP 500 / server errors so we fail fast instead of waiting 20s.
     print(f"{_ts()} [{_elapsed()}s] waiting for SAT post-login page...")
+    post_login_timeout = 22000
+    poll_ms = 2000
+    t_end = time.perf_counter() + (post_login_timeout / 1000.0)
+    while time.perf_counter() < t_end:
+        page.wait_for_timeout(poll_ms)
+        try:
+            url = page.url or ""
+            if "clouda.sat.gob.mx" in url.lower():
+                break
+            body = (page.locator("body").inner_text(timeout=2000) or "").lower()
+            if "500" in body or "internal server error" in body or "error: http 500" in body:
+                err = "SAT login returned HTTP 500 Internal Server Error (server-side). Try again later or check SAT status."
+                LOG.error("SAT 500 after login: %s", err)
+                print(err, file=sys.stderr)
+                raise RuntimeError(err)
+        except RuntimeError:
+            raise
+        except Exception:
+            pass
     try:
-        page.wait_for_url(re.compile(r"clouda\.sat\.gob\.mx", re.I), timeout=20000)
+        page.wait_for_url(re.compile(r"clouda\.sat\.gob\.mx", re.I), timeout=5000)
     except Exception:
         pass
     try:
