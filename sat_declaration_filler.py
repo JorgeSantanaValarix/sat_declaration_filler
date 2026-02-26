@@ -724,13 +724,13 @@ def fill_initial_form(page: Page, data: dict, mapping: dict) -> None:
     ok = _fill_select_next_to_label(scope, page_for_wait, "Periodicidad", periodicidad_value, mapping=mapping, initial_dropdown_key="initial_periodicidad")
     print(f"{_debug_ts()} [initial form] Periodicidad: {periodicidad}" + (" (filled)" if ok else " (NOT filled — check selectors)"))
     page_for_wait.wait_for_timeout(800)
-    # Periodo dropdown appears after Periodicidad (Enero–Diciembre; SAT may show only YTD months).
+    # Periodo dropdown appears after Periodicidad (Enero–Diciembre; SAT may show only YTD months). pstcdypisr uses label "Periodo" (no accent).
     if month is not None:
         print(f"{_debug_ts()} [initial form DEBUG] --- Filling Periodo ---")
         periodo_value = _SAT_PERIODO_LABEL.get(month, "Enero")
-        ok = _fill_select_next_to_label(scope, page_for_wait, "Período", periodo_value, mapping=mapping, initial_dropdown_key="initial_periodo")
+        ok = _fill_select_next_to_label(scope, page_for_wait, "Periodo", periodo_value, mapping=mapping, initial_dropdown_key="initial_periodo")
         if not ok:
-            ok = _fill_select_next_to_label(scope, page_for_wait, "Periodo", periodo_value, mapping=mapping, initial_dropdown_key="initial_periodo")
+            ok = _fill_select_next_to_label(scope, page_for_wait, "Período", periodo_value, mapping=mapping, initial_dropdown_key="initial_periodo")
         if not ok and mapping.get("initial_periodo"):
             sel_list = mapping["initial_periodo"] if isinstance(mapping["initial_periodo"], list) else [mapping["initial_periodo"]]
             ok = _fill_select_by_mapping(scope, page_for_wait, sel_list, periodo_value)
@@ -738,11 +738,11 @@ def fill_initial_form(page: Page, data: dict, mapping: dict) -> None:
                 print(f"{_debug_ts()} [initial form DEBUG] Periodo filled via mapping selectors")
         print(f"{_debug_ts()} [initial form] Periodo: {month:02d} ({periodo_value})" + (" (filled)" if ok else " (NOT filled — check selectors)"))
         page_for_wait.wait_for_timeout(800)
-    # Tipo de declaración appears after Periodo (Normal / Normal por Corrección Fiscal). SAT may show label as "Tipo de declaración" (lowercase d).
+    # Tipo de declaración appears after Periodo (Normal / Normal por Corrección Fiscal). pstcdypisr uses label "Tipo de declaración" (lowercase d).
     print(f"{_debug_ts()} [initial form DEBUG] --- Filling Tipo de Declaración ---")
-    ok = _fill_select_next_to_label(scope, page_for_wait, "Tipo de Declaración", str(tipo), mapping=mapping, initial_dropdown_key="initial_tipo_declaracion")
+    ok = _fill_select_next_to_label(scope, page_for_wait, "Tipo de declaración", str(tipo), mapping=mapping, initial_dropdown_key="initial_tipo_declaracion")
     if not ok:
-        ok = _fill_select_next_to_label(scope, page_for_wait, "Tipo de declaración", str(tipo), mapping=mapping, initial_dropdown_key="initial_tipo_declaracion")
+        ok = _fill_select_next_to_label(scope, page_for_wait, "Tipo de Declaración", str(tipo), mapping=mapping, initial_dropdown_key="initial_tipo_declaracion")
     if not ok and mapping.get("initial_tipo_declaracion"):
         sel_list = mapping["initial_tipo_declaracion"] if isinstance(mapping["initial_tipo_declaracion"], list) else [mapping["initial_tipo_declaracion"]]
         ok = _fill_select_by_mapping(scope, page_for_wait, sel_list, str(tipo))
