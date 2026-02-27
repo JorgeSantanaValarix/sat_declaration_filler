@@ -2076,16 +2076,22 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
         if ver_detalle_clicked:
             page.wait_for_timeout(200)
             LOG.info("Phase 4: looking for popup with label 'ISR retenido no acreditable'")
-            # Resolve popup dialog (ISR retenido)
+            try:
+                page.get_by_text(re.compile(r"ISR retenido no acreditable", re.I)).first.wait_for(state="visible", timeout=150)
+                LOG.info("Phase 4: ISR retenido popup (ISR retenido no acreditable) visible")
+            except Exception:
+                pass
+            page.wait_for_timeout(10)
+            # Resolve popup dialog — same logic as Phase 3 Descuentos popup
             dialog = None
-            for use_last, dialog_loc, to_ms in [
-                (False, page.get_by_role("dialog"), 2000),
-                (False, page.locator("[role='dialog']"), 1000),
-                (True, page.locator("div").filter(has_text=re.compile(r"ISR retenido", re.I)).filter(has_text=re.compile(r"ISR retenido no acreditable", re.I)), 800),
+            for try_dialog in [
+                lambda: page.get_by_role("dialog").first,
+                lambda: page.locator(".modal, [role='dialog']").first,
+                lambda: page.get_by_text(re.compile(r"ISR retenido no acreditable", re.I)).first.locator("xpath=ancestor::*[contains(@class,'modal') or contains(@class,'dialog') or @role='dialog'][1]"),
             ]:
                 try:
-                    d = dialog_loc.last if use_last else dialog_loc.first
-                    d.wait_for(state="visible", timeout=to_ms)
+                    d = try_dialog()
+                    d.wait_for(state="visible", timeout=80)
                     dialog = d
                     break
                 except Exception:
@@ -2094,18 +2100,9 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
                 dialog = page
             filled = False
             try:
-                # Use visible label only (avoid hidden one e.g. for="nombre" in search box)
-                label_el = None
-                for el in dialog.get_by_text(re.compile(r"ISR retenido no acreditable", re.I)).all():
-                    try:
-                        if el.is_visible():
-                            label_el = el
-                            break
-                    except Exception:
-                        continue
-                if label_el is None:
-                    label_el = dialog.get_by_text(re.compile(r"ISR retenido no acreditable", re.I)).first
-                    label_el.wait_for(state="visible", timeout=2000)
+                # Same logic as Phase 3 Descuentos: label then xpaths (short timeouts), then get_by_label, then modal_inputs by row text
+                label_el = dialog.get_by_text(re.compile(r"ISR retenido no acreditable", re.I)).first
+                label_el.wait_for(state="visible", timeout=150)
                 LOG.info("Phase 4: found label 'ISR retenido no acreditable'; filling textbox to the right with value=%s from Excel", isr_retenido_str)
                 for xpath in [
                     "xpath=((ancestor::td | ancestor::th)[1])/following-sibling::*//input",
@@ -2115,7 +2112,7 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
                 ]:
                     try:
                         inp = label_el.locator(xpath).first
-                        inp.wait_for(state="visible", timeout=500)
+                        inp.wait_for(state="visible", timeout=80)
                         if inp.get_attribute("disabled") or inp.get_attribute("readonly"):
                             continue
                         inp.click()
@@ -2127,13 +2124,39 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
                     except Exception:
                         continue
                 if not filled:
-                    inp = dialog.get_by_label(re.compile(r"ISR retenido no acreditable", re.I)).first
-                    inp.wait_for(state="visible", timeout=500)
-                    inp.click()
-                    inp.clear()
-                    inp.fill(isr_retenido_str)
-                    filled = True
-                    LOG.info("Phase 4: filled 'ISR retenido no acreditable' (by label) with value=%s from Excel", isr_retenido_str)
+                    try:
+                        inp = dialog.get_by_label(re.compile(r"ISR retenido no acreditable", re.I)).first
+                        inp.wait_for(state="visible", timeout=150)
+                        inp.click()
+                        inp.clear()
+                        inp.fill(isr_retenido_str)
+                        filled = True
+                        LOG.info("Phase 4: filled 'ISR retenido no acreditable' (by label) with value=%s from Excel", isr_retenido_str)
+                    except Exception:
+                        pass
+                # Same logic as Phase 3 (Descuentos popup): find input by row text if label/xpath failed
+                if not filled:
+                    try:
+                        modal_inputs = dialog.locator("input[type='text'], input[type='number'], input:not([type])")
+                        n = min(modal_inputs.count(), 12)
+                        for idx in range(n):
+                            inp = modal_inputs.nth(idx)
+                            try:
+                                if inp.get_attribute("disabled"):
+                                    continue
+                                inp.wait_for(state="visible", timeout=60)
+                                row = inp.locator("xpath=ancestor::tr[1] | ancestor::div[contains(@class,'row')][1]")
+                                if row.count() > 0 and row.first.get_by_text(re.compile(r"ISR retenido no acreditable", re.I)).count() > 0:
+                                    inp.click()
+                                    inp.clear()
+                                    inp.fill(isr_retenido_str)
+                                    filled = True
+                                    LOG.info("Phase 4: filled 'ISR retenido no acreditable' (by row text, same as Phase 3) with value=%s from Excel", isr_retenido_str)
+                                    break
+                            except Exception:
+                                continue
+                    except Exception:
+                        pass
             except Exception as e_fill:
                 LOG.warning("Phase 4: could not fill ISR retenido no acreditable: %s", e_fill)
             page.wait_for_timeout(200)
@@ -2596,24 +2619,20 @@ def run(
                         return True
                     finally:
                         _run_context = None
-                        def _cleanup() -> None:
-                            try:
-                                logout_sat(page, mapping)
-                            except Exception as e:
-                                LOG.debug("Logout during cleanup: %s", e)
-                            try:
-                                context.close()
-                            except Exception as e:
-                                LOG.debug("Context close: %s", e)
-                            try:
-                                browser.close()
-                            except Exception as e:
-                                LOG.debug("Browser close: %s", e)
-                        cleanup_thread = threading.Thread(target=_cleanup, daemon=True)
-                        cleanup_thread.start()
-                        cleanup_thread.join(timeout=5.0)
-                        if cleanup_thread.is_alive():
-                            LOG.info("Cleanup did not finish in 5s; exiting anyway.")
+                        time.sleep(0.5)  # Let Playwright pending ops settle before close (avoids greenlet thread errors)
+                        # Skip logout in test cleanup to avoid blocking (Cerrar may be missing or covered); close page then context/browser so script exits
+                        try:
+                            page.close()
+                        except Exception as e:
+                            LOG.debug("Page close: %s", e)
+                        try:
+                            context.close()
+                        except Exception as e:
+                            LOG.debug("Context close: %s", e)
+                        try:
+                            browser.close()
+                        except Exception as e:
+                            LOG.debug("Browser close: %s", e)
             except Exception as e:
                 LOG.exception("Test login failed")
                 print(str(e), file=sys.stderr)
@@ -2658,24 +2677,20 @@ def run(
                         return True
                     finally:
                         _run_context = None
-                        def _cleanup() -> None:
-                            try:
-                                logout_sat(page, mapping)
-                            except Exception as e:
-                                LOG.debug("Logout during cleanup: %s", e)
-                            try:
-                                context.close()
-                            except Exception as e:
-                                LOG.debug("Context close: %s", e)
-                            try:
-                                browser.close()
-                            except Exception as e:
-                                LOG.debug("Browser close: %s", e)
-                        cleanup_thread = threading.Thread(target=_cleanup, daemon=True)
-                        cleanup_thread.start()
-                        cleanup_thread.join(timeout=5.0)
-                        if cleanup_thread.is_alive():
-                            LOG.info("Cleanup did not finish in 5s; exiting anyway.")
+                        time.sleep(0.5)  # Let Playwright pending ops settle before close (avoids greenlet thread errors)
+                        # Skip logout in test cleanup to avoid blocking (Cerrar may be missing or covered); close page then context/browser so script exits
+                        try:
+                            page.close()
+                        except Exception as e:
+                            LOG.debug("Page close: %s", e)
+                        try:
+                            context.close()
+                        except Exception as e:
+                            LOG.debug("Context close: %s", e)
+                        try:
+                            browser.close()
+                        except Exception as e:
+                            LOG.debug("Browser close: %s", e)
             except Exception as e:
                 LOG.exception("Test initial form failed")
                 print(str(e), file=sys.stderr)
@@ -2737,24 +2752,20 @@ def run(
                         return True
                     finally:
                         _run_context = None
-                        def _cleanup() -> None:
-                            try:
-                                logout_sat(page, mapping)
-                            except Exception as e:
-                                LOG.debug("Logout during cleanup: %s", e)
-                            try:
-                                context.close()
-                            except Exception as e:
-                                LOG.debug("Context close: %s", e)
-                            try:
-                                browser.close()
-                            except Exception as e:
-                                LOG.debug("Browser close: %s", e)
-                        cleanup_thread = threading.Thread(target=_cleanup, daemon=True)
-                        cleanup_thread.start()
-                        cleanup_thread.join(timeout=5.0)
-                        if cleanup_thread.is_alive():
-                            LOG.info("Cleanup (logout/close) did not finish in 5s; exiting anyway.")
+                        time.sleep(0.5)  # Let Playwright pending ops settle before close (avoids greenlet thread errors)
+                        # Skip logout in test cleanup to avoid blocking (Cerrar may be missing or covered); close page then context/browser so script exits
+                        try:
+                            page.close()
+                        except Exception as e:
+                            LOG.debug("Page close: %s", e)
+                        try:
+                            context.close()
+                        except Exception as e:
+                            LOG.debug("Context close: %s", e)
+                        try:
+                            browser.close()
+                        except Exception as e:
+                            LOG.debug("Browser close: %s", e)
             except Exception as e:
                 LOG.exception("Test full run failed")
                 print(str(e), file=sys.stderr)
@@ -2817,24 +2828,20 @@ def run(
                         return True
                     finally:
                         _run_context = None
-                        def _cleanup() -> None:
-                            try:
-                                logout_sat(page, mapping)
-                            except Exception as e:
-                                LOG.debug("Logout during cleanup: %s", e)
-                            try:
-                                context.close()
-                            except Exception as e:
-                                LOG.debug("Context close: %s", e)
-                            try:
-                                browser.close()
-                            except Exception as e:
-                                LOG.debug("Browser close: %s", e)
-                        cleanup_thread = threading.Thread(target=_cleanup, daemon=True)
-                        cleanup_thread.start()
-                        cleanup_thread.join(timeout=5.0)
-                        if cleanup_thread.is_alive():
-                            LOG.info("Cleanup did not finish in 5s; exiting anyway.")
+                        time.sleep(0.5)  # Let Playwright pending ops settle before close (avoids greenlet thread errors)
+                        # Skip logout in test cleanup to avoid blocking (Cerrar may be missing or covered); close page then context/browser so script exits
+                        try:
+                            page.close()
+                        except Exception as e:
+                            LOG.debug("Page close: %s", e)
+                        try:
+                            context.close()
+                        except Exception as e:
+                            LOG.debug("Context close: %s", e)
+                        try:
+                            browser.close()
+                        except Exception as e:
+                            LOG.debug("Browser close: %s", e)
             except Exception as e:
                 LOG.exception("Test phase 3 failed")
                 print(str(e), file=sys.stderr)
