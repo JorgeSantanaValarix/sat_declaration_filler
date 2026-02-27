@@ -1232,6 +1232,38 @@ def _click_capturar_total_percibidos(page: Page, scope: Page | Frame) -> bool:
     return False
 
 
+def _click_ver_detalle_next_to_label(page_or_scope: Page | Frame, label_substring: str) -> bool:
+    """Find the label containing label_substring, then click the 'VER DETALLE' link/button in the same row. Returns True if clicked."""
+    try:
+        loc = page_or_scope.get_by_text(re.compile(re.escape(label_substring), re.I))
+        if loc.count() == 0:
+            return False
+        label_el = loc.first
+        label_el.wait_for(state="visible", timeout=1500)
+    except Exception:
+        return False
+    for i in range(1, 10):
+        try:
+            container = label_el.locator(f"xpath=(ancestor::*)[{i}]")
+            if container.count() == 0:
+                break
+            ver_btns = container.first.locator("a, button").filter(has_text=re.compile(r"VER DETALLE", re.I))
+            n = ver_btns.count()
+            if n == 0:
+                continue
+            ver_btn = ver_btns.first
+            ver_btn.wait_for(state="visible", timeout=500)
+            try:
+                ver_btn.scroll_into_view_if_needed(timeout=250)
+            except Exception:
+                pass
+            ver_btn.click()
+            return True
+        except Exception:
+            continue
+    return False
+
+
 def _set_dropdown_by_label_scope(scope: Page | Frame, page_for_click: Page, label_substring: str, value: str, timeout_ms: int = 5000) -> bool:
     """Set a <select> in scope by label containing label_substring. value is option label (e.g. Sí/No)."""
     try:
@@ -1254,9 +1286,10 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
     - *¿Los ingresos fueron obtenidos a través de copropiedad? → always "No"
     - Total de ingresos efectivamente cobrados → skip (prefilled, no action)
     - Descuentos, devoluciones y bonificaciones → CAPTURAR → popup: set *Descuentos...integrantes por copropiedad to 0 → CERRAR
-    - ¿Tienes ingresos a disminuir? → if (SAT Total de ingresos efectivamente cobrados - Excel Total de ingresos acumulados) > 1 then Sí + CAPTURAR popup (AGREGAR → Concepto "Ingresos facturados pendientes de cancelacion con aceptacion del receptor" → Importe = difference → GUARDAR → CERRAR); else No
-    - ¿Tienes ingresos adicionales? → if (Excel Total de ingresos acumulados - SAT Total de ingresos efectivamente cobrados) > 1 then Sí + CAPTURAR popup (AGREGAR → Concepto "Ingresos no considerados en el prellenado" → Importe = difference → GUARDAR → CERRAR); else No
-    - Then Total percibidos CAPTURAR popup."""
+    - ¿Tienes ingresos a disminuir? → if (SAT Total - Excel Total) > 1 then Sí + CAPTURAR popup (AGREGAR → Concepto → Importe → GUARDAR → CERRAR); else No
+    - ¿Tienes ingresos adicionales? → if (Excel - SAT) > 1 then Sí + CAPTURAR popup; else No
+    - Total percibidos CAPTURAR popup.
+    Phase 4 (after Ingresos completed): GUARDAR → Determinación tab → VER DETALLE (ISR retenido por personas morales) → popup fill "ISR retenido no acreditable" from Excel (label "ISR retenido") → CERRAR → GUARDAR."""
     LOG.info("Filling ISR Ingresos form...")
     label_map = data.get("label_map") or {}
     # Always "No" per requirements for *¿Los ingresos fueron obtenidos a través de copropiedad?
@@ -1878,6 +1911,195 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
         LOG.warning("ISR Ingresos: Total percibidos CAPTURAR/popup failed: %s", e)
     LOG.info("ISR Ingresos form fill completed")
 
+    # Phase 4: GUARDAR → Determinación tab (to the right of Ingresos) → VER DETALLE (ISR retenido por personas morales) → popup fill "ISR retenido no acreditable" → CERRAR → GUARDAR
+    LOG.info("")
+    LOG.info("===== Phase 4: Determinación (GUARDAR → Determinación tab → ISR retenido VER DETALLE) =====")
+    try:
+        page.wait_for_timeout(400)
+        guardar_clicked = False
+        LOG.info("Phase 4: clicking GUARDAR (save Ingresos form)")
+        # Main form GUARDAR (top-right); SAT may use button, input, or link — try visible one first
+        for attempt, (loc, desc) in enumerate([
+            (page.get_by_role("button", name=re.compile(r"GUARDAR", re.I)), "button"),
+            (page.get_by_text("GUARDAR", exact=True), "text"),
+            (page.locator("input[type='submit'][value*='GUARDAR'], input[type='button'][value*='GUARDAR']"), "input"),
+        ]):
+            try:
+                if attempt == 0:
+                    first_btn = loc.first
+                    first_btn.wait_for(state="visible", timeout=8000)
+                    if first_btn.get_attribute("disabled"):
+                        continue
+                    first_btn.click(timeout=5000)
+                else:
+                    for elem in loc.all():
+                        try:
+                            if elem.is_visible() and elem.get_attribute("disabled") != "true":
+                                elem.click(timeout=5000)
+                                guardar_clicked = True
+                                LOG.info("Phase 4: GUARDAR clicked (save Ingresos form, %s)", desc)
+                                break
+                        except Exception:
+                            continue
+                    if guardar_clicked:
+                        break
+                guardar_clicked = True
+                LOG.info("Phase 4: GUARDAR clicked (save Ingresos form, %s)", desc)
+                break
+            except Exception:
+                continue
+        if not guardar_clicked:
+            raise RuntimeError("Could not click GUARDAR (main form save button)")
+        page.wait_for_timeout(1500)
+        LOG.info("Phase 4: GUARDAR clicked, waiting for load")
+        page.wait_for_load_state("domcontentloaded", timeout=5000)
+        page.wait_for_timeout(800)
+        LOG.info("Phase 4: clicking Determinación tab (to the right of Ingresos)")
+        # Avoid matching hidden modal title "Determinación de la Base gravable"; click the visible tab only
+        det_clicked = False
+        for elem in page.get_by_text("Determinación", exact=True).all():
+            try:
+                if elem.is_visible():
+                    elem.click(timeout=4000)
+                    det_clicked = True
+                    LOG.info("Phase 4: Determinación tab clicked")
+                    break
+            except Exception:
+                continue
+        if not det_clicked:
+            for elem in page.locator("a, button, [role='tab'], li").filter(has_text=re.compile(r"^Determinación$", re.I)).all():
+                try:
+                    if elem.is_visible() and not elem.locator("xpath=ancestor::*[contains(@class,'modal') or @role='dialog']").count():
+                        elem.click(timeout=4000)
+                        det_clicked = True
+                        LOG.info("Phase 4: Determinación tab clicked (fallback)")
+                        break
+                except Exception:
+                    continue
+        if not det_clicked:
+            raise RuntimeError("Could not click Determinación tab (visible tab not found)")
+        page.wait_for_timeout(1200)
+        LOG.info("Phase 4: Determinación tab clicked, waiting for section to load")
+        page.wait_for_load_state("domcontentloaded", timeout=5000)
+        page.wait_for_timeout(500)
+        LOG.info("Phase 4: Determinación section loaded; next: VER DETALLE on same row as label 'ISR retenido por personas morales'")
+
+        # Excel value for "ISR retenido no acreditable": row with label "ISR retenido" in col D or E (same as Base gravable)
+        LOG.info("Phase 4: getting value from Excel: row with label 'ISR retenido' in col D or E (parse as Base gravable)")
+        label_map = data.get("label_map") or {}
+        isr_retenido_raw = label_map.get("ISR retenido")
+        isr_retenido_parsed = _parse_currency(isr_retenido_raw) if isr_retenido_raw is not None else 0.0
+        workbook_path = data.get("workbook_path") or "(workbook not set)"
+        LOG.info(
+            "Phase 4: Excel value for ISR retenido no acreditable: label='ISR retenido' | workbook=%s | raw=%s → parsed=%.2f",
+            workbook_path, isr_retenido_raw, isr_retenido_parsed,
+        )
+        isr_retenido_str = str(int(round(isr_retenido_parsed))) if isr_retenido_parsed is not None else "0"
+
+        ver_detalle_clicked = False
+        LOG.info("Phase 4: clicking VER DETALLE (same row as label 'ISR retenido por personas morales', like CAPTURAR)")
+        try:
+            scope = _get_isr_ingresos_scope(page)
+            try:
+                scope.locator("#tab457maincontainer1").first.wait_for(state="attached", timeout=500)
+                tab_scope = scope.locator("#tab457maincontainer1").first
+            except Exception:
+                tab_scope = scope
+            ver_detalle_clicked = _click_ver_detalle_next_to_label(tab_scope, "ISR retenido por personas morales")
+            if not ver_detalle_clicked:
+                ver_detalle_clicked = _click_ver_detalle_next_to_label(page, "ISR retenido por personas morales")
+            if ver_detalle_clicked:
+                LOG.info("Phase 4: VER DETALLE clicked; popup should appear")
+            else:
+                LOG.warning("Phase 4: could not click VER DETALLE next to ISR retenido por personas morales")
+        except Exception as e:
+            LOG.warning("Phase 4: VER DETALLE click failed: %s", e)
+
+        if ver_detalle_clicked:
+            page.wait_for_timeout(400)
+            LOG.info("Phase 4: looking for popup with label 'ISR retenido no acreditable'")
+            # Resolve popup dialog (ISR retenido)
+            dialog = None
+            for use_last, dialog_loc, to_ms in [
+                (False, page.get_by_role("dialog"), 2000),
+                (False, page.locator("[role='dialog']"), 1000),
+                (True, page.locator("div").filter(has_text=re.compile(r"ISR retenido", re.I)).filter(has_text=re.compile(r"ISR retenido no acreditable", re.I)), 800),
+            ]:
+                try:
+                    d = dialog_loc.last if use_last else dialog_loc.first
+                    d.wait_for(state="visible", timeout=to_ms)
+                    dialog = d
+                    break
+                except Exception:
+                    continue
+            if dialog is None:
+                dialog = page
+            filled = False
+            try:
+                label_el = dialog.get_by_text(re.compile(r"ISR retenido no acreditable", re.I)).first
+                label_el.wait_for(state="visible", timeout=1000)
+                LOG.info("Phase 4: found label 'ISR retenido no acreditable'; filling textbox to the right with value=%s from Excel", isr_retenido_str)
+                for xpath in [
+                    "xpath=((ancestor::td | ancestor::th)[1])/following-sibling::*//input",
+                    "xpath=(ancestor::tr[1])//input",
+                    "xpath=following-sibling::*//input",
+                    "xpath=..//input",
+                ]:
+                    try:
+                        inp = label_el.locator(xpath).first
+                        inp.wait_for(state="visible", timeout=500)
+                        if inp.get_attribute("disabled") or inp.get_attribute("readonly"):
+                            continue
+                        inp.click()
+                        inp.clear()
+                        inp.fill(isr_retenido_str)
+                        filled = True
+                        LOG.info("Phase 4: filled 'ISR retenido no acreditable' textbox with value=%s (from Excel)", isr_retenido_str)
+                        break
+                    except Exception:
+                        continue
+                if not filled:
+                    inp = dialog.get_by_label(re.compile(r"ISR retenido no acreditable", re.I)).first
+                    inp.wait_for(state="visible", timeout=500)
+                    inp.click()
+                    inp.clear()
+                    inp.fill(isr_retenido_str)
+                    filled = True
+                    LOG.info("Phase 4: filled 'ISR retenido no acreditable' (by label) with value=%s from Excel", isr_retenido_str)
+            except Exception as e_fill:
+                LOG.warning("Phase 4: could not fill ISR retenido no acreditable: %s", e_fill)
+            page.wait_for_timeout(200)
+            LOG.info("Phase 4: clicking CERRAR in ISR retenido popup")
+            page.get_by_role("button", name=re.compile(r"CERRAR", re.I)).first.click(timeout=1500)
+            page.wait_for_timeout(600)
+            LOG.info("Phase 4: CERRAR clicked, popup closed; next: GUARDAR and wait for load")
+        LOG.info("Phase 4: clicking GUARDAR (after Determinación / ISR retenido popup)")
+        guardar2_clicked = False
+        for loc in [
+            page.get_by_role("button", name=re.compile(r"GUARDAR", re.I)),
+            page.locator("input[type='submit'][value*='GUARDAR'], input[type='button'][value*='GUARDAR']"),
+            page.get_by_text("GUARDAR", exact=True),
+        ]:
+            try:
+                first_btn = loc.first
+                first_btn.wait_for(state="visible", timeout=6000)
+                if first_btn.get_attribute("disabled"):
+                    continue
+                first_btn.click(timeout=4000)
+                guardar2_clicked = True
+                break
+            except Exception:
+                continue
+        if guardar2_clicked:
+            page.wait_for_timeout(1500)
+            LOG.info("Phase 4: GUARDAR clicked, waiting for load")
+            page.wait_for_load_state("domcontentloaded", timeout=5000)
+            page.wait_for_timeout(500)
+            LOG.info("Phase 4: load complete after GUARDAR")
+        LOG.info("Phase 4: Determinación (ISR retenido no acreditable) completed")
+    except Exception as e:
+        LOG.warning("Phase 4 (Determinación / ISR retenido VER DETALLE) failed: %s", e)
+
 
 def logout_sat(page: Page, mapping: dict) -> None:
     """Click 'Cerrar' (next to Inicio) in the SAT nav bar to log out. Safe to call if not logged in or element missing."""
@@ -2272,7 +2494,7 @@ def run(
     Full flow: read Excel → get e.firma → login SAT → navigate → fill initial → fill ISR → fill IVA → check totals → send.
     If test_login=True: only open SAT and perform e.firma login (no DB; use test_* in config). Returns True if login succeeded.
     If test_initial_form=True: login then fill Declaración Provisional initial form (no Excel; use test_year, test_month, test_periodicidad in config).
-    If test_full=True: login + fill initial form + phase 3 (SIGUIENTE, CERRAR, ISR simplificado, fill ISR section). e.firma and data from config/Excel. No IVA/send.
+    If test_full=True: login + fill initial form + phase 3 (ISR Ingresos) + phase 4 (Determinación, ISR retenido VER DETALLE). e.firma and data from config/Excel. No IVA/send.
     If test_phase3=True: login + fill initial form + select ISR simplificado de confianza + fill ISR section (Ingresos, etc.). Stops after ISR fill; no IVA/send. Requires --workbook.
     Returns True if declaration was sent (or test step OK), False otherwise. Logs and prints outcome.
     """
@@ -2370,7 +2592,7 @@ def run(
     if test_full:
         if not workbook_path:
             raise ValueError("Test full run requires --workbook")
-        LOG.info("Test full run: e.firma from config (no DB); initial form from Excel; then phase 3 (SIGUIENTE, CERRAR, ISR simplificado, fill ISR); no IVA/send")
+        LOG.info("Test full run: e.firma from config (no DB); initial form from Excel; then phase 3 (ISR Ingresos) + phase 4 (Determinación, ISR retenido); no IVA/send")
         data = read_impuestos(workbook_path)
         data["workbook_path"] = workbook_path
         label_map = data["label_map"]
@@ -2412,7 +2634,7 @@ def run(
                         page.wait_for_timeout(500)
                         fill_isr_ingresos_form(page, mapping, data)
                         fill_obligation_section(page, mapping, label_map, isr_labels)
-                        LOG.info("Test full run: initial form + phase 3 complete. Browser will stay open 10s for inspection.")
+                        LOG.info("Test full run: initial form + phase 3 (ISR Ingresos) + phase 4 (Determinación) complete. Browser will stay open 10s for inspection.")
                         page.wait_for_timeout(10000)
                         return True
                     finally:
@@ -2604,7 +2826,7 @@ def main() -> None:
     parser.add_argument("--mapping", help="Path to form_field_mapping.json (default: script dir)")
     parser.add_argument("--test-login", action="store_true", help="Test only: open SAT and log in with local .cer/.key and password from config (no DB)")
     parser.add_argument("--test-initial-form", action="store_true", help="Test phase 2: login then fill Declaración Provisional initial form (no Excel; use test_year, test_month, test_periodicidad in config)")
-    parser.add_argument("--test-full", action="store_true", help="Test full: login + initial form + phase 3 (SIGUIENTE, CERRAR, ISR simplificado, fill ISR); e.firma from config, data from Excel (--workbook); no IVA/send")
+    parser.add_argument("--test-full", action="store_true", help="Test full: login + initial form + phase 3 (ISR Ingresos) + phase 4 (Determinación, ISR retenido VER DETALLE); e.firma from config, data from Excel (--workbook); no IVA/send")
     parser.add_argument("--test-phase3", action="store_true", help="Test phase 3: login, initial form, select ISR simplificado de confianza, fill ISR section (Ingresos etc.); requires --workbook; stops before IVA/send")
     args = parser.parse_args()
 
