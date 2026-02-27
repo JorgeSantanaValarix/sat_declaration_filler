@@ -1289,6 +1289,8 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
     concepto_label = data.get("isr_ingresos_concepto") or "Actividad empresarial"
 
     page.wait_for_timeout(100)
+    LOG.info("")
+    LOG.info("===== ISR Ingresos: sección 1 - ¿Los ingresos fueron obtenidos a través de copropiedad? =====")
     # Wait for Ingresos form by label text (minimal wait for 5–10s total Phase 3)
     scope = _get_isr_ingresos_scope(page)
     try:
@@ -1310,6 +1312,8 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
         LOG.warning("ISR Ingresos: could not set copropiedad dropdown")
     page.wait_for_timeout(50)
     # 2. Total de ingresos efectivamente cobrados — no need to fill or do anything (prefilled, skip)
+    LOG.info("")
+    LOG.info("===== ISR Ingresos: sección 3 - Descuentos, devoluciones y bonificaciones =====")
     # 3. Descuentos, devoluciones y bonificaciones: press CAPTURAR → popup: add "0" on *Descuentos, devoluciones y bonificaciones de integrantes por copropiedad → CERRAR
     try:
         capturar_clicked = _try_click(page, mapping, "_isr_ingresos_capturar_descuentos")
@@ -1417,6 +1421,8 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
         page.wait_for_timeout(80)
     except Exception as e:
         LOG.warning("ISR Ingresos: Descuentos CAPTURAR/popup failed: %s", e)
+    LOG.info("")
+    LOG.info("===== ISR Ingresos: sección 4 - ¿Tienes ingresos a disminuir? / *Ingresos a disminuir =====")
     # 4. ¿Tienes ingresos a disminuir? — compare SAT "Total de ingresos efectivamente cobrados" vs Excel (Total de ingresos acumulados); if SAT - Excel > 1 → Sí + CAPTURAR popup
     sat_total_cobrados = _read_sat_total_ingresos_cobrados(page, scope, mapping)
     sat_total_cobrados = float(sat_total_cobrados) if sat_total_cobrados is not None else 0.0
@@ -1621,6 +1627,8 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
         except Exception as e:
             LOG.warning("ISR Ingresos: Ingresos a disminuir CAPTURAR/popup failed: %s", e)
     page.wait_for_timeout(80)
+    LOG.info("")
+    LOG.info("===== ISR Ingresos: sección 5 - ¿Tienes ingresos adicionales? =====")
     # 5. ¿Tienes ingresos adicionales? — if Excel > SAT (difference > 1) → Sí + CAPTURAR popup with "Ingresos no considerados en el prellenado" and Importe = difference
     diferencia_adicionales = (excel_total_cobrados or 0.0) - (sat_total_cobrados or 0.0)
     need_ingresos_adicionales = diferencia_adicionales > 1
@@ -1678,6 +1686,8 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
         except Exception as e:
             LOG.warning("ISR Ingresos: Ingresos adicionales CAPTURAR/popup failed: %s", e)
         page.wait_for_timeout(80)
+    LOG.info("")
+    LOG.info("===== ISR Ingresos: sección 6 - Total de ingresos percibidos por la actividad =====")
     # 6. Total de ingresos percibidos por la actividad: press CAPTURAR → popup "Total de ingresos efectivamente cobrados" → for each Excel row (Actividad empresarial, Actividad profesional, Uso o goce temporal) with value != "-": AGREGAR → Concepto → Importe → GUARDAR → ACEPTAR → then CERRAR
     try:
         capturar_clicked = _try_click(page, mapping, "_isr_ingresos_capturar_total")
