@@ -1594,7 +1594,16 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
                         print(f"{_debug_ts()} [Phase3 DEBUG] Ingresos a disminuir popup flags: concepto_ok={concepto_ok}, importe_ok={importe_ok}, importe_str={importe_str}")
                         print(f"{_debug_ts()} [Phase3 DEBUG] Ingresos a disminuir: clicking GUARDAR")
                         btn_scope.get_by_role("button", name=re.compile(r"GUARDAR", re.I)).first.click(timeout=1500)
-                        page.wait_for_timeout(150)
+                        page.wait_for_timeout(200)
+                        # Small confirmation popup ("Captura la información requerida") with ACEPTAR button
+                        try:
+                            confirm_btn = page.get_by_role("button", name=re.compile(r"ACEPTAR", re.I)).first
+                            confirm_btn.wait_for(state="visible", timeout=1500)
+                            print(f"{_debug_ts()} [Phase3 DEBUG] Ingresos a disminuir: clicking ACEPTAR")
+                            confirm_btn.click()
+                            page.wait_for_timeout(300)
+                        except Exception:
+                            pass
                         print(f"{_debug_ts()} [Phase3 DEBUG] Ingresos a disminuir: clicking CERRAR")
                         btn_scope.get_by_role("button", name=re.compile(r"CERRAR", re.I)).first.click(timeout=1500)
                         LOG.info("ISR Ingresos: Ingresos a disminuir popup filled (importe=%s), closed", importe_str)
