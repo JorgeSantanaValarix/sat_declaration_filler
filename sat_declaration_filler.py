@@ -1525,6 +1525,8 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
                                 continue
                     except Exception as e_c:
                         LOG.warning("ISR Ingresos: Concepto in popup: %s", e_c)
+                if concepto_ok:
+                    LOG.info("ISR Ingresos: Ingresos a disminuir popup: selected *Concepto (Ingresos facturados pendientes de cancelación con aceptación del receptor)")
                 # Importe: same row as Concepto dropdown (form row), then GUARDAR → CERRAR
                 importe_ok = False
                 # Strategy A: input in the same row as the Concepto select we just used (most reliable)
@@ -1588,6 +1590,8 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
                                 continue
                     except Exception:
                         pass
+                if importe_ok:
+                    LOG.info("ISR Ingresos: Ingresos a disminuir popup: filled Importe=%s", importe_str)
                 if concepto_ok and importe_ok:
                     try:
                         btn_scope = dialog if dialog != page else page
@@ -1674,7 +1678,7 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
         except Exception as e:
             LOG.warning("ISR Ingresos: Ingresos adicionales CAPTURAR/popup failed: %s", e)
         page.wait_for_timeout(80)
-    # 6. Total de ingresos percibidos por la actividad: press CAPTURAR (the one to the right of this label, not Ingresos a disminuir) → popup → AGREGAR → Concepto → Importe → GUARDAR → CERRAR
+    # 6. Total de ingresos percibidos por la actividad: press CAPTURAR → popup "Total de ingresos efectivamente cobrados" → for each Excel row (Actividad empresarial, Actividad profesional, Uso o goce temporal) with value != "-": AGREGAR → Concepto → Importe → GUARDAR → ACEPTAR → then CERRAR
     try:
         capturar_clicked = _try_click(page, mapping, "_isr_ingresos_capturar_total")
         if not capturar_clicked:
@@ -1685,35 +1689,165 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
             capturar_clicked = _click_capturar_next_to_label(scope, "Total de ingresos percibidos")
         if not capturar_clicked:
             raise RuntimeError("Could not click Total percibidos CAPTURAR link")
+        LOG.info("ISR Ingresos: Total percibidos CAPTURAR pressed")
         page.wait_for_timeout(150)
-        try:
-            page.get_by_role("button", name=re.compile(r"AGREGAR", re.I)).first.click(timeout=1500)
-            page.wait_for_timeout(150)
-        except Exception:
-            pass
-        try:
-            concepto_dd = page.get_by_label(re.compile(r"Concepto", re.I)).first
-            concepto_dd.wait_for(state="visible", timeout=1500)
-            concepto_dd.select_option(label=concepto_label)
-            page.wait_for_timeout(80)
-            importe_inp = page.get_by_label(re.compile(r"Importe", re.I)).first
-            importe_inp.wait_for(state="visible", timeout=800)
-            importe_inp.fill(importe_str)
-            page.wait_for_timeout(80)
-        except Exception:
-            pass
-        if mapping.get("_popup_guardar"):
-            for sel in mapping["_popup_guardar"]:
-                try:
-                    page.locator(sel).first.click(timeout=1500)
+        # Resolve "Total de ingresos efectivamente cobrados" popup dialog
+        dialog = None
+        for use_last, dialog_loc in [
+            (False, page.get_by_role("dialog")),
+            (False, page.locator("[role='dialog']")),
+            (True, page.locator("div").filter(has_text=re.compile(r"Total de ingresos efectivamente cobrados", re.I)).filter(has_text=re.compile(r"Concepto|AGREGAR|Monto", re.I))),
+            (True, page.locator("div").filter(has_text=re.compile(r"Total de ingresos efectivamente cobrados", re.I)).filter(has=page.locator("select"))),
+        ]:
+            try:
+                if dialog_loc.count() > 0:
+                    d = dialog_loc.last if use_last else dialog_loc.first
+                    d.wait_for(state="visible", timeout=2000)
+                    dialog = d
                     break
+            except Exception:
+                continue
+        if dialog is None:
+            dialog = page
+        # Three Excel labels (col D or E) → SAT Concepto dropdown option; only add when value is not "-" or missing
+        total_percibidos_entries = [
+            ("Actividad empresarial", "Actividad empresarial"),
+            ("Actividad profesional (honorarios)", "Servicios profesionales (Honorarios)"),
+            ("Uso o goce temporal de bienes (arrendamiento)", "Uso o goce temporal de bienes"),
+        ]
+        for excel_label, sat_concepto in total_percibidos_entries:
+            raw = label_map.get(excel_label)
+            if raw is None:
+                continue
+            # Skip when Excel shows "-" or the parsed numeric value is zero
+            if isinstance(raw, str) and str(raw).strip() == "-":
+                continue
+            parsed = _parse_currency(raw)
+            if abs(parsed) < 0.005:
+                continue
+            importe_str = str(int(round(parsed)))
+            LOG.info("ISR Ingresos: Total percibidos adding entry: excel_label=%r, sat_concepto=%r, importe=%s", excel_label, sat_concepto, importe_str)
+            try:
+                if dialog != page:
+                    dialog.get_by_role("button", name=re.compile(r"AGREGAR", re.I)).first.click(timeout=1500)
+                    page.wait_for_timeout(150)
+            except Exception as e_ag:
+                LOG.warning("ISR Ingresos: Total percibidos AGREGAR for %r: %s", excel_label, e_ag)
+                continue
+            concepto_ok = False
+            try:
+                loc_concepto = dialog.get_by_text(re.compile(r"\*?\s*Concepto", re.I))
+                if loc_concepto.count() == 0:
+                    loc_concepto = dialog.get_by_text("Concepto", exact=False)
+                if loc_concepto.count() > 0:
+                    label_concepto = loc_concepto.first
+                    label_concepto.wait_for(state="visible", timeout=800)
+                    for xpath in [
+                        "xpath=((ancestor::td | ancestor::th)[1])/following-sibling::*//select",
+                        "xpath=(ancestor::tr[1])//select",
+                        "xpath=following-sibling::*//select",
+                        "xpath=..//select",
+                    ]:
+                        try:
+                            concepto_dd = label_concepto.locator(xpath).first
+                            concepto_dd.wait_for(state="visible", timeout=500)
+                            concepto_dd.select_option(label=sat_concepto)
+                            concepto_ok = True
+                            page.wait_for_timeout(100)
+                            break
+                        except Exception:
+                            continue
+            except Exception:
+                pass
+            if not concepto_ok:
+                try:
+                    sel = dialog.locator("select").first
+                    sel.wait_for(state="visible", timeout=800)
+                    sel.select_option(label=sat_concepto)
+                    concepto_ok = True
+                    page.wait_for_timeout(100)
+                except Exception as e_c:
+                    LOG.warning("ISR Ingresos: Total percibidos Concepto %r: %s", sat_concepto, e_c)
+            if concepto_ok:
+                LOG.info(
+                    "ISR Ingresos: Total percibidos popup: selected Concepto=%r for excel_label=%r",
+                    sat_concepto,
+                    excel_label,
+                )
+            importe_ok = False
+            try:
+                sel_first = dialog.locator("select").first
+                sel_first.wait_for(state="visible", timeout=500)
+                for row_xpath in ["xpath=ancestor::tr[1]", "xpath=ancestor::*[.//input][1]"]:
+                    try:
+                        row = sel_first.locator(row_xpath)
+                        if row.count() == 0:
+                            continue
+                        inp = row.locator("input[type='text'], input[type='number'], input:not([type])").first
+                        inp.wait_for(state="visible", timeout=400)
+                        if inp.get_attribute("disabled") or inp.get_attribute("readonly"):
+                            continue
+                        inp.click()
+                        inp.fill(importe_str)
+                        importe_ok = True
+                        page.wait_for_timeout(80)
+                        break
+                    except Exception:
+                        continue
+            except Exception:
+                pass
+            if not importe_ok:
+                try:
+                    label_importe = dialog.get_by_text("Importe", exact=False).first
+                    label_importe.wait_for(state="visible", timeout=500)
+                    for xpath in [
+                        "xpath=((ancestor::td | ancestor::th)[1])/following-sibling::*//input[not(@disabled)]",
+                        "xpath=(ancestor::tr[1])//input[not(@disabled)]",
+                        "xpath=following-sibling::*//input",
+                    ]:
+                        try:
+                            importe_inp = label_importe.locator(xpath).first
+                            importe_inp.wait_for(state="visible", timeout=400)
+                            if importe_inp.get_attribute("readonly"):
+                                continue
+                            importe_inp.click()
+                            importe_inp.fill(importe_str)
+                            importe_ok = True
+                            page.wait_for_timeout(80)
+                            break
+                        except Exception:
+                            continue
                 except Exception:
-                    continue
-        else:
-            page.get_by_role("button", name=re.compile(r"GUARDAR", re.I)).first.click(timeout=1500)
-        page.wait_for_timeout(150)
-        page.get_by_role("button", name=re.compile(r"CERRAR", re.I)).first.click(timeout=1500)
-        LOG.info("ISR Ingresos: Total percibidos popup filled and closed")
+                    pass
+            if importe_ok:
+                LOG.info(
+                    "ISR Ingresos: Total percibidos popup: filled Importe=%s for excel_label=%r",
+                    importe_str,
+                    excel_label,
+                )
+            if concepto_ok and importe_ok:
+                try:
+                    btn_scope = dialog if dialog != page else page
+                    btn_scope.get_by_role("button", name=re.compile(r"GUARDAR", re.I)).first.click(timeout=1500)
+                    page.wait_for_timeout(200)
+                    try:
+                        confirm_btn = page.get_by_role("button", name=re.compile(r"ACEPTAR", re.I)).first
+                        confirm_btn.wait_for(state="visible", timeout=1500)
+                        confirm_btn.click()
+                        page.wait_for_timeout(300)
+                    except Exception:
+                        pass
+                except Exception as e_btn:
+                    LOG.warning("ISR Ingresos: Total percibidos GUARDAR/ACEPTAR for %r: %s", excel_label, e_btn)
+            else:
+                LOG.warning("ISR Ingresos: Total percibidos entry not filled (concepto=%s, importe=%s) for %r", concepto_ok, importe_ok, excel_label)
+        # Close the popup
+        try:
+            btn_scope = dialog if dialog != page else page
+            btn_scope.get_by_role("button", name=re.compile(r"CERRAR", re.I)).first.click(timeout=1500)
+            LOG.info("ISR Ingresos: Total percibidos popup filled and closed")
+        except Exception as e_close:
+            LOG.warning("ISR Ingresos: Total percibidos CERRAR: %s", e_close)
         page.wait_for_timeout(150)
     except Exception as e:
         LOG.warning("ISR Ingresos: Total percibidos CAPTURAR/popup failed: %s", e)
