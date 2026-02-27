@@ -434,9 +434,9 @@ def _try_fill(scope: Page | Frame, page_for_wait: Page, mapping: dict, key: str,
     selectors = mapping.get(key)
     if not selectors:
         return False
-    # Login: default timeout. Initial form: longer timeout so exact-ID selectors can find elements. Others: short.
+    # Login: short timeouts for 5s target. Initial form: longer. Others: short.
     if key.startswith("_login_"):
-        timeout_ms = None  # default
+        timeout_ms = 400
     elif key.startswith("initial_"):
         timeout_ms = _INITIAL_FORM_SELECTOR_TIMEOUT_MS
     else:
@@ -450,7 +450,7 @@ def _try_fill(scope: Page | Frame, page_for_wait: Page, mapping: dict, key: str,
                 if loc.count() < 2 and key == "_login_key_file_input":
                     continue
                 target = loc.first if key == "_login_cer_file_input" else loc.nth(1)
-                target.wait_for(state="attached", timeout=1000)
+                target.wait_for(state="attached", timeout=min(300, timeout_ms))
                 target.set_input_files(value)
                 return True
             # Label-based: find control by its visible label (works for dropdowns and inputs).
@@ -460,7 +460,7 @@ def _try_fill(scope: Page | Frame, page_for_wait: Page, mapping: dict, key: str,
                 if loc.count() == 0:
                     continue
                 first = loc.first
-                first.wait_for(state="visible", timeout=1000)
+                first.wait_for(state="visible", timeout=timeout_ms or 1000)
                 if is_file:
                     first.set_input_files(value)
                 else:
@@ -472,14 +472,14 @@ def _try_fill(scope: Page | Frame, page_for_wait: Page, mapping: dict, key: str,
                             first.select_option(label=value_str)
                     else:
                         first.click()
-                        page_for_wait.wait_for_timeout(300)
+                        page_for_wait.wait_for_timeout(100 if (timeout_ms or 0) <= 500 else 300)
                         first.fill(value_str)
                 return True
             loc = scope.locator(sel)
             if loc.count() == 0:
                 continue
             first = loc.first
-            first.wait_for(state="visible", timeout=1000)
+            first.wait_for(state="visible", timeout=timeout_ms or 1000)
             if is_file:
                 first.set_input_files(value)
             else:
@@ -491,7 +491,7 @@ def _try_fill(scope: Page | Frame, page_for_wait: Page, mapping: dict, key: str,
                         first.select_option(label=value_str)
                 else:
                     first.click()
-                    page_for_wait.wait_for_timeout(300)
+                    page_for_wait.wait_for_timeout(100 if (timeout_ms or 0) <= 500 else 300)
                     first.fill(value_str)
             return True
         except Exception:
@@ -576,16 +576,15 @@ def login_sat(page, efirma: dict, mapping: dict, base_url: str = SAT_PORTAL_URL)
     if not _try_click(page, mapping, "_login_e_firma_button"):
         raise RuntimeError("Could not find e.firma button on SAT login page")
     print(f"{_ts()} [{_elapsed()}s] e.firma pressed")
-    # Wait for e.firma form to be ready (short timeouts; max ~1s extra delay).
     try:
-        page.wait_for_url(re.compile(r".*id=fiel.*", re.I), timeout=500)
+        page.wait_for_url(re.compile(r".*id=fiel.*", re.I), timeout=200)
     except Exception:
         pass
     try:
-        page.locator("input[type='file'], input[type='password']").first.wait_for(state="visible", timeout=1000)
+        page.locator("input[type='file'], input[type='password']").first.wait_for(state="visible", timeout=300)
     except Exception:
         pass
-    # Set cer, key, password with no extra delay (target ~1s total).
+    # Set cer, key, password with minimal delay.
     cer_input_ok = _try_fill(page, page, mapping, "_login_cer_file_input", efirma["cer_path"], is_file=True)
     if cer_input_ok:
         print(f"{_ts()} [{_elapsed()}s] filled .cer: {os.path.basename(efirma['cer_path'])}")
@@ -611,17 +610,16 @@ def login_sat(page, efirma: dict, mapping: dict, base_url: str = SAT_PORTAL_URL)
     else:
         LOG.warning("Password field not filled — check selectors")
         print(f"{_ts()} [{_elapsed()}s] password NOT filled (check selectors)")
-    # RFC is not filled: SAT typically derives it from the .cer; filling it can cause long delays.
-    page.wait_for_timeout(500)
+    page.wait_for_timeout(50)
     print(f"{_ts()} [{_elapsed()}s] pressing Enviar")
     # Click Enviar: try mapping first, then fallbacks (SAT markup varies; Enviar can be button or input).
     if not _try_click(page, mapping, "_login_enviar_button"):
         enviar_clicked = False
         for try_fn in [
-            lambda: page.get_by_role("button", name=re.compile(r"Enviar", re.I)).first.click(timeout=3000),
-            lambda: page.locator("button").filter(has_text=re.compile(r"Enviar", re.I)).first.click(timeout=3000),
-            lambda: page.locator("input[type='submit'][value='Enviar']").first.click(timeout=3000),
-            lambda: page.locator("input[type='submit'][value*='Enviar']").first.click(timeout=3000),
+            lambda: page.get_by_role("button", name=re.compile(r"Enviar", re.I)).first.click(timeout=1200),
+            lambda: page.locator("button").filter(has_text=re.compile(r"Enviar", re.I)).first.click(timeout=1200),
+            lambda: page.locator("input[type='submit'][value='Enviar']").first.click(timeout=1200),
+            lambda: page.locator("input[type='submit'][value*='Enviar']").first.click(timeout=1200),
         ]:
             try:
                 try_fn()
@@ -634,7 +632,7 @@ def login_sat(page, efirma: dict, mapping: dict, base_url: str = SAT_PORTAL_URL)
         if not enviar_clicked:
             # Last resort: second submit button (first is often "Contraseña")
             try:
-                page.locator("input[type='submit'], button[type='submit']").nth(1).click(timeout=3000)
+                page.locator("input[type='submit'], button[type='submit']").nth(1).click(timeout=1200)
                 enviar_clicked = True
                 LOG.info("Clicked Enviar via nth(1) submit")
                 print(f"{_ts()} [{_elapsed()}s] Enviar pressed (nth(1))")
@@ -645,10 +643,9 @@ def login_sat(page, efirma: dict, mapping: dict, base_url: str = SAT_PORTAL_URL)
     else:
         print(f"{_ts()} [{_elapsed()}s] Enviar pressed")
     page.wait_for_load_state("domcontentloaded")
-    # Wait for SAT post-login page; detect HTTP 500 / server errors so we fail fast instead of waiting 20s.
     print(f"{_ts()} [{_elapsed()}s] waiting for SAT post-login page...")
-    post_login_timeout = 15000
-    poll_ms = 1000
+    post_login_timeout = 8000
+    poll_ms = 150
     t_end = time.perf_counter() + (post_login_timeout / 1000.0)
     while time.perf_counter() < t_end:
         page.wait_for_timeout(poll_ms)
@@ -656,7 +653,7 @@ def login_sat(page, efirma: dict, mapping: dict, base_url: str = SAT_PORTAL_URL)
             url = page.url or ""
             if "clouda.sat.gob.mx" in url.lower():
                 break
-            body = (page.locator("body").inner_text(timeout=2000) or "").lower()
+            body = (page.locator("body").inner_text(timeout=400) or "").lower()
             if "500" in body or "internal server error" in body or "error: http 500" in body:
                 err = "SAT login returned HTTP 500 Internal Server Error (server-side). Try again later or check SAT status."
                 LOG.error("SAT 500 after login: %s", err)
@@ -667,19 +664,19 @@ def login_sat(page, efirma: dict, mapping: dict, base_url: str = SAT_PORTAL_URL)
         except Exception:
             pass
     try:
-        page.wait_for_url(re.compile(r"clouda\.sat\.gob\.mx", re.I), timeout=5000)
+        page.wait_for_url(re.compile(r"clouda\.sat\.gob\.mx", re.I), timeout=1000)
     except Exception:
         pass
     try:
         for sel in (mapping.get("_nav_presentar_declaracion") or []) + (mapping.get("_nav_nuevo_portal") or []) + ["text=Presentar declaración", "text=Cerrar Sesión", "text=Bienvenido"]:
             try:
-                page.locator(sel).first.wait_for(state="visible", timeout=5000)
+                page.locator(sel).first.wait_for(state="visible", timeout=1000)
                 break
             except Exception:
                 continue
     except Exception:
         pass
-    page.wait_for_timeout(1000)
+    page.wait_for_timeout(80)
     print(f"{_ts()} [{_elapsed()}s] post-login page ready.")
     err = _check_sat_page_error(page)
     if err:
@@ -1081,7 +1078,7 @@ def _click_capturar_next_to_label(page_or_scope: Page | Frame, label_substring: 
         if loc.count() <= occurrence:
             return False
         label_el = loc.nth(occurrence)
-        label_el.wait_for(state="visible", timeout=2000)
+        label_el.wait_for(state="visible", timeout=800)
     except Exception:
         return False
     for i in range(1, 10):
@@ -1103,16 +1100,16 @@ def _click_capturar_next_to_label(page_or_scope: Page | Frame, label_substring: 
                     row = cap.locator("xpath=ancestor::tr[1]").first
                     if row.count() == 0:
                         continue
-                    row_text = row.inner_text(timeout=400) or ""
+                    row_text = row.inner_text(timeout=200) or ""
                     # Same row as our label if it contains the label text; exclude question row "¿Tienes ingresos a disminuir?"
                     if label_substring.lower() in row_text.lower() and "¿Tienes" not in row_text:
                         capturar = cap
                         break
                 else:
                     continue
-            capturar.wait_for(state="visible", timeout=1000)
+            capturar.wait_for(state="visible", timeout=500)
             try:
-                capturar.scroll_into_view_if_needed(timeout=500)
+                capturar.scroll_into_view_if_needed(timeout=250)
             except Exception:
                 pass
             capturar.click()
@@ -1134,7 +1131,7 @@ def _click_capturar_ingresos_a_disminuir(page: Page, scope: Page | Frame) -> boo
                 cap = dd.locator("xpath=following::a[contains(., 'CAPTURAR')]").first
                 cap.wait_for(state="visible", timeout=1200)
                 try:
-                    cap.scroll_into_view_if_needed(timeout=500)
+                    cap.scroll_into_view_if_needed(timeout=400)
                 except Exception:
                     pass
                 cap.click()
@@ -1177,6 +1174,48 @@ def _click_capturar_ingresos_a_disminuir(page: Page, scope: Page | Frame) -> boo
     # Strategy 4: label-based with occurrence=1 (uses same-row logic to avoid clicking Descuentos CAPTURAR)
     if _click_capturar_next_to_label(tab_scope, "Ingresos a disminuir", occurrence=1):
         return True
+    return False
+
+
+def _click_capturar_total_percibidos(page: Page, scope: Page | Frame) -> bool:
+    """Click the CAPTURAR to the right of 'Total de ingresos percibidos por la actividad' only (the third CAPTURAR; do not click Ingresos a disminuir CAPTURAR)."""
+    tab_scope = scope.locator("#tab457maincontainer1").first if scope.locator("#tab457maincontainer1").count() > 0 else scope
+    try:
+        label_el = tab_scope.get_by_text("Total de ingresos percibidos por la actividad", exact=False).first
+        label_el.wait_for(state="visible", timeout=800)
+        for i in range(1, 10):
+            try:
+                container = label_el.locator(f"xpath=(ancestor::*)[{i}]")
+                if container.count() == 0:
+                    break
+                caps = container.first.locator("a, button").filter(has_text=re.compile(r"CAPTURAR", re.I))
+                n = caps.count()
+                if n == 0:
+                    continue
+                if n == 1:
+                    capturar = caps.first
+                else:
+                    for j in range(n):
+                        cap = caps.nth(j)
+                        cap_row = cap.locator("xpath=ancestor::tr[1]").first
+                        if cap_row.count() == 0:
+                            continue
+                        if "Total de ingresos percibidos" in (cap_row.inner_text(timeout=200) or ""):
+                            capturar = cap
+                            break
+                    else:
+                        continue
+                capturar.wait_for(state="visible", timeout=500)
+                try:
+                    capturar.scroll_into_view_if_needed(timeout=250)
+                except Exception:
+                    pass
+                capturar.click()
+                return True
+            except Exception:
+                continue
+    except Exception:
+        pass
     return False
 
 
@@ -1249,47 +1288,45 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
         importe_str = str(importe_total)
     concepto_label = data.get("isr_ingresos_concepto") or "Actividad empresarial"
 
-    page.wait_for_timeout(500)
-    # Wait for Ingresos form by label text (same approach as phase 2), not by fixed IDs
+    page.wait_for_timeout(100)
+    # Wait for Ingresos form by label text (minimal wait for 5–10s total Phase 3)
     scope = _get_isr_ingresos_scope(page)
     try:
-        scope.get_by_text("copropiedad", exact=False).first.wait_for(state="visible", timeout=8000)
+        scope.get_by_text("copropiedad", exact=False).first.wait_for(state="visible", timeout=600)
     except Exception:
         try:
-            scope.get_by_text("ingresos fueron obtenidos", exact=False).first.wait_for(state="visible", timeout=3000)
+            scope.get_by_text("ingresos fueron obtenidos", exact=False).first.wait_for(state="visible", timeout=500)
         except Exception:
-            LOG.warning("ISR Ingresos form (label 'copropiedad') not visible after 20s")
+            LOG.warning("ISR Ingresos form (label 'copropiedad') not visible")
     # 1. ¿Los ingresos fueron obtenidos a través de copropiedad? — use unique label (avoid matching "integrantes por copropiedad" in Descuentos)
     _si = copropiedad.strip().lower() in ("sí", "si", "yes")
     si_no_label = "Sí" if _si else "No"
     copropiedad_ok = _fill_select_next_to_label(scope, page, "ingresos fueron obtenidos a través de copropiedad", si_no_label, mapping=None, initial_dropdown_key=None)
     if not copropiedad_ok:
-        copropiedad_ok = _set_dropdown_by_label_scope(scope, page, "ingresos fueron obtenidos a través de copropiedad", si_no_label, timeout_ms=4000)
+        copropiedad_ok = _set_dropdown_by_label_scope(scope, page, "ingresos fueron obtenidos a través de copropiedad", si_no_label, timeout_ms=1500)
     if copropiedad_ok:
         LOG.info("ISR Ingresos: copropiedad = %s (dropdown)", si_no_label)
     else:
         LOG.warning("ISR Ingresos: could not set copropiedad dropdown")
-    page.wait_for_timeout(300)
+    page.wait_for_timeout(50)
     # 2. Total de ingresos efectivamente cobrados — no need to fill or do anything (prefilled, skip)
     # 3. Descuentos, devoluciones y bonificaciones: press CAPTURAR → popup: add "0" on *Descuentos, devoluciones y bonificaciones de integrantes por copropiedad → CERRAR
     try:
         capturar_clicked = _try_click(page, mapping, "_isr_ingresos_capturar_descuentos")
         if not capturar_clicked:
-            capturar_clicked = _click_capturar_next_to_label(page, "Descuentos, devoluciones y bonificaciones")
+            capturar_clicked = _click_capturar_next_to_label(scope, "Descuentos, devoluciones y bonificaciones")
         if not capturar_clicked:
-            capturar_clicked = _click_capturar_next_to_label(page, "Descuentos")
+            capturar_clicked = _click_capturar_next_to_label(scope, "Descuentos")
         if capturar_clicked:
-            page.wait_for_timeout(700)
+            page.wait_for_timeout(50)
             descuentos_value = str(descuentos_copropiedad)
             filled = False
-            # Wait for popup title so we scope only the modal (avoid main-page labels)
             try:
-                page.get_by_text("Devoluciones, descuentos y bonificaciones facturadas", exact=False).first.wait_for(state="visible", timeout=4000)
+                page.get_by_text("Devoluciones, descuentos y bonificaciones facturadas", exact=False).first.wait_for(state="visible", timeout=300)
                 LOG.info("ISR Ingresos: Descuentos popup (Devoluciones, descuentos y bonificaciones facturadas) visible")
             except Exception:
                 pass
-            page.wait_for_timeout(300)
-            # Scope: dialog role, or modal class, or container that has the popup title
+            page.wait_for_timeout(20)
             dialog = None
             for try_dialog in [
                 lambda: page.get_by_role("dialog").first,
@@ -1298,50 +1335,39 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
             ]:
                 try:
                     d = try_dialog()
-                    d.wait_for(state="visible", timeout=900)
+                    d.wait_for(state="visible", timeout=150)
                     dialog = d
                     break
                 except Exception:
                     continue
             if dialog is None:
                 dialog = page
+            # Fast path: input in same row as label "integrantes por copropiedad"
             try:
-                inp = dialog.get_by_label(re.compile(r"Descuentos.*integrantes por copropiedad", re.I)).first
-                inp.wait_for(state="visible", timeout=3000)
-                inp.click()
-                inp.clear()
-                inp.fill(descuentos_value)
-                filled = True
+                label_el = dialog.get_by_text(re.compile(r"integrantes por copropiedad", re.I)).first
+                label_el.wait_for(state="visible", timeout=300)
+                for xpath in [
+                    "xpath=((ancestor::td | ancestor::th)[1])/following-sibling::*//input",
+                    "xpath=(ancestor::tr[1])//input",
+                    "xpath=following-sibling::*//input",
+                    "xpath=..//input",
+                ]:
+                    try:
+                        inp = label_el.locator(xpath).first
+                        inp.wait_for(state="visible", timeout=150)
+                        inp.click()
+                        inp.clear()
+                        inp.fill(descuentos_value)
+                        filled = True
+                        break
+                    except Exception:
+                        continue
             except Exception:
                 pass
             if not filled:
                 try:
-                    label_el = dialog.get_by_text(re.compile(r"integrantes por copropiedad", re.I)).first
-                    label_el.wait_for(state="visible", timeout=3000)
-                    for xpath in [
-                        "xpath=((ancestor::td | ancestor::th)[1])/following-sibling::*//input",
-                        "xpath=(ancestor::tr[1])//input",
-                        "xpath=following-sibling::*//input",
-                        "xpath=..//input",
-                    ]:
-                        try:
-                            inp = label_el.locator(xpath).first
-                            inp.wait_for(state="visible", timeout=1000)
-                            inp.click()
-                            inp.clear()
-                            inp.fill(descuentos_value)
-                            filled = True
-                            break
-                        except Exception:
-                            continue
-                except Exception:
-                    pass
-            if not filled:
-                try:
-                    label_el = dialog.get_by_text(re.compile(r"Descuentos.*de integrantes por copropiedad", re.I)).first
-                    label_el.wait_for(state="visible", timeout=1200)
-                    inp = label_el.locator("xpath=((ancestor::td | ancestor::th)[1])/following-sibling::*//input").first
-                    inp.wait_for(state="visible", timeout=1000)
+                    inp = dialog.get_by_label(re.compile(r"Descuentos.*integrantes por copropiedad", re.I)).first
+                    inp.wait_for(state="visible", timeout=300)
                     inp.click()
                     inp.clear()
                     inp.fill(descuentos_value)
@@ -1349,15 +1375,27 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
                 except Exception:
                     pass
             if not filled:
-                # Last resort: in the modal, the second visible input is often "integrantes por copropiedad" (first is "amparadas por comprobantes")
+                try:
+                    label_el = dialog.get_by_text(re.compile(r"Descuentos.*de integrantes por copropiedad", re.I)).first
+                    label_el.wait_for(state="visible", timeout=200)
+                    inp = label_el.locator("xpath=((ancestor::td | ancestor::th)[1])/following-sibling::*//input").first
+                    inp.wait_for(state="visible", timeout=150)
+                    inp.click()
+                    inp.clear()
+                    inp.fill(descuentos_value)
+                    filled = True
+                except Exception:
+                    pass
+            if not filled:
                 try:
                     modal_inputs = dialog.locator("input[type='text'], input[type='number'], input:not([type])")
-                    n = modal_inputs.count()
+                    n = min(modal_inputs.count(), 8)
                     for idx in range(n):
                         inp = modal_inputs.nth(idx)
                         try:
-                            inp.wait_for(state="visible", timeout=500)
-                            # Check if this input is in a row that contains "integrantes por copropiedad"
+                            if inp.get_attribute("disabled"):
+                                continue
+                            inp.wait_for(state="visible", timeout=100)
                             row = inp.locator("xpath=ancestor::tr[1] | ancestor::div[contains(@class,'row')][1]")
                             if row.count() > 0 and row.first.get_by_text("integrantes por copropiedad").count() > 0:
                                 inp.click()
@@ -1371,12 +1409,12 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
                     pass
             if not filled:
                 LOG.warning("ISR Ingresos: could not find Descuentos popup textbox (*Descuentos...integrantes por copropiedad)")
-            page.wait_for_timeout(300)
-            page.get_by_role("button", name=re.compile(r"CERRAR", re.I)).first.click(timeout=3000)
+            page.wait_for_timeout(30)
+            page.get_by_role("button", name=re.compile(r"CERRAR", re.I)).first.click(timeout=800)
             LOG.info("ISR Ingresos: Descuentos popup filled and closed")
         else:
             LOG.warning("ISR Ingresos: could not click Descuentos CAPTURAR link")
-        page.wait_for_timeout(500)
+        page.wait_for_timeout(80)
     except Exception as e:
         LOG.warning("ISR Ingresos: Descuentos CAPTURAR/popup failed: %s", e)
     # 4. ¿Tienes ingresos a disminuir? — compare SAT "Total de ingresos efectivamente cobrados" vs Excel (Total de ingresos acumulados); if SAT - Excel > 1 → Sí + CAPTURAR popup
@@ -1387,72 +1425,189 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
     diferencia = sat_total_cobrados - excel_total_cobrados
     need_ingresos_a_disminuir = diferencia > 1
     si_no_disminuir_lbl = "Sí" if need_ingresos_a_disminuir else "No"
+    page.wait_for_timeout(200)
     if _fill_select_next_to_label(scope, page, "ingresos a disminuir", si_no_disminuir_lbl, mapping=None, initial_dropdown_key=None):
         LOG.info("ISR Ingresos: ingresos a disminuir = %s (SAT=%.2f Excel=%.2f diff=%.2f)", si_no_disminuir_lbl, sat_total_cobrados, excel_total_cobrados, diferencia)
     else:
         LOG.warning("ISR Ingresos: could not set ingresos a disminuir dropdown")
-    page.wait_for_timeout(300)
+    page.wait_for_timeout(150)
     if need_ingresos_a_disminuir:
         # *Ingresos a disminuir (section below dropdown) appears: wait for it, then CAPTURAR → popup AGREGAR → Concepto → Importe (int, no decimals) → GUARDAR → CERRAR
-        page.wait_for_timeout(600)  # let section "*Ingresos a disminuir" render after Sí
-        # Explicitly wait for section to be visible (same as Descuentos: section appears after dropdown change)
+        page.wait_for_timeout(400)
         tab_scope = scope.locator("#tab457maincontainer1").first if scope.locator("#tab457maincontainer1").count() > 0 else scope
         try:
-            tab_scope.get_by_text(re.compile(r"Ingresos a disminuir", re.I)).nth(1).wait_for(state="visible", timeout=2500)
+            tab_scope.get_by_text(re.compile(r"Ingresos a disminuir", re.I)).nth(1).wait_for(state="visible", timeout=2000)
         except Exception:
             pass
-        page.wait_for_timeout(200)
+        page.wait_for_timeout(150)
         try:
             capturar_clicked = _click_capturar_ingresos_a_disminuir(page, scope)
             if capturar_clicked:
-                page.wait_for_timeout(500)  # popup "Ingresos a disminuir" opens
+                LOG.info("ISR Ingresos: Ingresos a disminuir CAPTURAR pressed")
+                page.wait_for_timeout(150)
                 try:
-                    page.get_by_role("button", name=re.compile(r"AGREGAR", re.I)).first.click(timeout=2000)
-                    page.wait_for_timeout(300)
-                except Exception:
-                    pass
+                    page.get_by_role("button", name=re.compile(r"AGREGAR", re.I)).first.click(timeout=1500)
+                    page.wait_for_timeout(80)
+                except Exception as e_ag:
+                    LOG.warning("ISR Ingresos: could not click AGREGAR in Ingresos a disminuir popup: %s", e_ag)
                 # Importe = difference with no decimals (e.g. 8178.81 → 8178)
                 importe_val = int(round(diferencia))
                 importe_str = str(importe_val)
-                try:
-                    concepto_dd = page.get_by_label(re.compile(r"Concepto", re.I)).first
-                    concepto_dd.wait_for(state="visible", timeout=2000)
-                    concepto_dd.select_option(label=re.compile(r"Ingresos facturados pendientes de cancelaci[oó]n con aceptaci[oó]n del receptor", re.I))
-                    page.wait_for_timeout(150)
-                except Exception:
+                # Scope to the "Ingresos a disminuir" popup: modal has title + Concepto + Importe + GUARDAR; use .last for div so we get the modal, not main form
+                dialog = None
+                for use_last, dialog_loc in [
+                    (False, page.get_by_role("dialog")),
+                    (False, page.locator("[role='dialog']")),
+                    (True, page.locator("div").filter(has_text=re.compile(r"Ingresos a disminuir", re.I)).filter(has_text="Concepto").filter(has_text="Importe").filter(has_text="GUARDAR")),
+                    (True, page.locator("div").filter(has_text=re.compile(r"Ingresos a disminuir", re.I)).filter(has=page.locator("select"))),
+                ]:
                     try:
-                        page.locator("select").first.select_option(label=re.compile(r"pendientes de cancelaci", re.I))
-                        page.wait_for_timeout(150)
+                        if dialog_loc.count() > 0:
+                            d = dialog_loc.last if use_last else dialog_loc.first
+                            d.wait_for(state="visible", timeout=1200)
+                            dialog = d
+                            break
+                    except Exception:
+                        continue
+                if dialog is None:
+                    dialog = page
+                # Click AGREGAR inside the popup so Concepto/Importe row is ready
+                if dialog != page:
+                    try:
+                        dialog.get_by_role("button", name=re.compile(r"AGREGAR", re.I)).first.click(timeout=1000)
+                        page.wait_for_timeout(80)
                     except Exception:
                         pass
-                try:
-                    importe_inp = page.get_by_label(re.compile(r"Importe", re.I)).first
-                    importe_inp.wait_for(state="visible", timeout=1000)
-                    importe_inp.fill(importe_str)
-                    page.wait_for_timeout(150)
-                except Exception:
-                    pass
-                try:
-                    if mapping.get("_popup_guardar"):
-                        for sel in mapping["_popup_guardar"]:
+                # Option text variants (SAT may use accents)
+                concepto_option_labels = [
+                    "Ingresos facturados pendientes de cancelacion con aceptacion del receptor",
+                    "Ingresos facturados pendientes de cancelación con aceptación del receptor",
+                ]
+                # Strategy 1: *Concepto is label, dropdown on the right; then select option
+                concepto_ok = False
+                for opt_label in concepto_option_labels:
+                    if concepto_ok:
+                        break
+                    try:
+                        loc_concepto = dialog.get_by_text(re.compile(r"\*?\s*Concepto", re.I))
+                        if loc_concepto.count() == 0:
+                            loc_concepto = dialog.get_by_text("Concepto", exact=False)
+                        label_concepto = loc_concepto.first
+                        label_concepto.wait_for(state="visible", timeout=800)
+                        for xpath in [
+                            "xpath=((ancestor::td | ancestor::th)[1])/following-sibling::*//select",
+                            "xpath=(ancestor::tr[1])//select",
+                            "xpath=following-sibling::*//select",
+                            "xpath=..//select",
+                        ]:
                             try:
-                                page.locator(sel).first.click(timeout=2000)
+                                concepto_dd = label_concepto.locator(xpath).first
+                                concepto_dd.wait_for(state="visible", timeout=500)
+                                concepto_dd.select_option(label=opt_label)
+                                concepto_ok = True
+                                page.wait_for_timeout(100)
                                 break
                             except Exception:
                                 continue
-                    else:
-                        page.get_by_role("button", name=re.compile(r"GUARDAR", re.I)).first.click(timeout=2000)
-                    page.wait_for_timeout(300)
-                    page.get_by_role("button", name=re.compile(r"CERRAR", re.I)).first.click(timeout=2000)
-                    LOG.info("ISR Ingresos: Ingresos a disminuir popup filled (importe=%s), closed", importe_str)
-                    page.wait_for_timeout(300)
-                except Exception as e_btn:
-                    LOG.warning("ISR Ingresos: GUARDAR/CERRAR in Ingresos a disminuir popup: %s", e_btn)
+                    except Exception:
+                        continue
+                if not concepto_ok:
+                    try:
+                        sel = dialog.locator("select").first
+                        sel.wait_for(state="visible", timeout=800)
+                        for opt_label in concepto_option_labels:
+                            try:
+                                sel.select_option(label=opt_label)
+                                concepto_ok = True
+                                page.wait_for_timeout(100)
+                                break
+                            except Exception:
+                                continue
+                    except Exception as e_c:
+                        LOG.warning("ISR Ingresos: Concepto in popup: %s", e_c)
+                # Importe: same row as Concepto dropdown (form row), then GUARDAR → CERRAR
+                importe_ok = False
+                # Strategy A: input in the same row as the Concepto select we just used (most reliable)
+                try:
+                    sel_first = dialog.locator("select").first
+                    sel_first.wait_for(state="visible", timeout=500)
+                    for row_xpath in ["xpath=ancestor::tr[1]", "xpath=ancestor::*[.//input][1]"]:
+                        try:
+                            row = sel_first.locator(row_xpath)
+                            if row.count() == 0:
+                                continue
+                            inp = row.locator("input[type='text'], input[type='number'], input:not([type])").first
+                            inp.wait_for(state="visible", timeout=400)
+                            if inp.get_attribute("disabled") or inp.get_attribute("readonly"):
+                                continue
+                            inp.click()
+                            inp.fill(importe_str)
+                            importe_ok = True
+                            page.wait_for_timeout(80)
+                            break
+                        except Exception:
+                            continue
+                except Exception:
+                    pass
+                if not importe_ok:
+                    try:
+                        label_importe = dialog.get_by_text("Importe", exact=False).first
+                        label_importe.wait_for(state="visible", timeout=800)
+                        for xpath in [
+                            "xpath=((ancestor::td | ancestor::th)[1])/following-sibling::*//input[not(@disabled)]",
+                            "xpath=((ancestor::td | ancestor::th)[1])/following-sibling::*//input",
+                            "xpath=(ancestor::tr[1])//input[not(@disabled)]",
+                            "xpath=(ancestor::tr[1])//input",
+                            "xpath=following-sibling::*//input",
+                        ]:
+                            try:
+                                importe_inp = label_importe.locator(xpath).first
+                                importe_inp.wait_for(state="visible", timeout=400)
+                                if importe_inp.get_attribute("disabled") or importe_inp.get_attribute("readonly"):
+                                    continue
+                                importe_inp.click()
+                                importe_inp.fill(importe_str)
+                                importe_ok = True
+                                page.wait_for_timeout(80)
+                                break
+                            except Exception:
+                                continue
+                    except Exception as e_i:
+                        LOG.warning("ISR Ingresos: Importe in popup: %s", e_i)
+                if not importe_ok:
+                    try:
+                        for inp in dialog.locator("input[type='text'], input[type='number'], input:not([type])").all():
+                            try:
+                                if inp.get_attribute("disabled") or inp.get_attribute("readonly"):
+                                    continue
+                                inp.wait_for(state="visible", timeout=300)
+                                inp.fill(importe_str)
+                                importe_ok = True
+                                break
+                            except Exception:
+                                continue
+                    except Exception:
+                        pass
+                if concepto_ok and importe_ok:
+                    try:
+                        btn_scope = dialog if dialog != page else page
+                        print(f"{_debug_ts()} [Phase3 DEBUG] Ingresos a disminuir popup flags: concepto_ok={concepto_ok}, importe_ok={importe_ok}, importe_str={importe_str}")
+                        print(f"{_debug_ts()} [Phase3 DEBUG] Ingresos a disminuir: clicking GUARDAR")
+                        btn_scope.get_by_role("button", name=re.compile(r"GUARDAR", re.I)).first.click(timeout=1500)
+                        page.wait_for_timeout(150)
+                        print(f"{_debug_ts()} [Phase3 DEBUG] Ingresos a disminuir: clicking CERRAR")
+                        btn_scope.get_by_role("button", name=re.compile(r"CERRAR", re.I)).first.click(timeout=1500)
+                        LOG.info("ISR Ingresos: Ingresos a disminuir popup filled (importe=%s), closed", importe_str)
+                        page.wait_for_timeout(80)
+                    except Exception as e_btn:
+                        LOG.warning("ISR Ingresos: GUARDAR/CERRAR in Ingresos a disminuir popup: %s", e_btn)
+                else:
+                    LOG.warning("ISR Ingresos: Ingresos a disminuir popup not filled (concepto=%s, importe=%s); not clicking GUARDAR", concepto_ok, importe_ok)
             else:
                 LOG.warning("ISR Ingresos: could not click Ingresos a disminuir CAPTURAR")
         except Exception as e:
             LOG.warning("ISR Ingresos: Ingresos a disminuir CAPTURAR/popup failed: %s", e)
-    page.wait_for_timeout(300)
+    page.wait_for_timeout(80)
     # 5. ¿Tienes ingresos adicionales? — if Excel > SAT (difference > 1) → Sí + CAPTURAR popup with "Ingresos no considerados en el prellenado" and Importe = difference
     diferencia_adicionales = (excel_total_cobrados or 0.0) - (sat_total_cobrados or 0.0)
     need_ingresos_adicionales = diferencia_adicionales > 1
@@ -1461,16 +1616,16 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
         LOG.info("ISR Ingresos: ingresos adicionales = %s (SAT=%.2f Excel=%.2f diff=%.2f)", si_no_adicionales_lbl, sat_total_cobrados, excel_total_cobrados, diferencia_adicionales)
     else:
         LOG.warning("ISR Ingresos: could not set ingresos adicionales dropdown")
-    page.wait_for_timeout(300)
+    page.wait_for_timeout(80)
     if need_ingresos_adicionales:
         # *Ingresos adicionales appears: CAPTURAR → popup AGREGAR → Concepto "Ingresos no considerados en el prellenado" → Importe = difference → GUARDAR → CERRAR
         try:
             capturar_clicked = _click_capturar_next_to_label(page, "Ingresos adicionales")
             if capturar_clicked:
-                page.wait_for_timeout(700)
+                page.wait_for_timeout(200)
                 try:
-                    page.get_by_role("button", name=re.compile(r"AGREGAR", re.I)).first.click(timeout=3000)
-                    page.wait_for_timeout(500)
+                    page.get_by_role("button", name=re.compile(r"AGREGAR", re.I)).first.click(timeout=1500)
+                    page.wait_for_timeout(150)
                 except Exception:
                     pass
                 diferencia_adic_str = f"{diferencia_adicionales:,.2f}".replace(",", "")
@@ -1509,46 +1664,48 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
                 LOG.warning("ISR Ingresos: could not click Ingresos adicionales CAPTURAR")
         except Exception as e:
             LOG.warning("ISR Ingresos: Ingresos adicionales CAPTURAR/popup failed: %s", e)
-    page.wait_for_timeout(300)
-    # 6. Total de ingresos percibidos por la actividad: press CAPTURAR → popup → AGREGAR → Concepto → Importe → GUARDAR → CERRAR
+        page.wait_for_timeout(80)
+    # 6. Total de ingresos percibidos por la actividad: press CAPTURAR (the one to the right of this label, not Ingresos a disminuir) → popup → AGREGAR → Concepto → Importe → GUARDAR → CERRAR
     try:
         capturar_clicked = _try_click(page, mapping, "_isr_ingresos_capturar_total")
         if not capturar_clicked:
-            capturar_clicked = _click_capturar_next_to_label(page, "Total de ingresos percibidos por la actividad")
+            capturar_clicked = _click_capturar_total_percibidos(page, scope)
         if not capturar_clicked:
-            capturar_clicked = _click_capturar_next_to_label(page, "Total de ingresos percibidos")
+            capturar_clicked = _click_capturar_next_to_label(scope, "Total de ingresos percibidos por la actividad")
+        if not capturar_clicked:
+            capturar_clicked = _click_capturar_next_to_label(scope, "Total de ingresos percibidos")
         if not capturar_clicked:
             raise RuntimeError("Could not click Total percibidos CAPTURAR link")
-        page.wait_for_timeout(700)
+        page.wait_for_timeout(150)
         try:
-            page.get_by_role("button", name=re.compile(r"AGREGAR", re.I)).first.click(timeout=3000)
-            page.wait_for_timeout(500)
+            page.get_by_role("button", name=re.compile(r"AGREGAR", re.I)).first.click(timeout=1500)
+            page.wait_for_timeout(150)
         except Exception:
             pass
         try:
             concepto_dd = page.get_by_label(re.compile(r"Concepto", re.I)).first
-            concepto_dd.wait_for(state="visible", timeout=4000)
+            concepto_dd.wait_for(state="visible", timeout=1500)
             concepto_dd.select_option(label=concepto_label)
-            page.wait_for_timeout(200)
+            page.wait_for_timeout(80)
             importe_inp = page.get_by_label(re.compile(r"Importe", re.I)).first
-            importe_inp.wait_for(state="visible", timeout=1200)
+            importe_inp.wait_for(state="visible", timeout=800)
             importe_inp.fill(importe_str)
-            page.wait_for_timeout(200)
+            page.wait_for_timeout(80)
         except Exception:
             pass
         if mapping.get("_popup_guardar"):
             for sel in mapping["_popup_guardar"]:
                 try:
-                    page.locator(sel).first.click(timeout=3000)
+                    page.locator(sel).first.click(timeout=1500)
                     break
                 except Exception:
                     continue
         else:
-            page.get_by_role("button", name=re.compile(r"GUARDAR", re.I)).first.click(timeout=3000)
-        page.wait_for_timeout(500)
-        page.get_by_role("button", name=re.compile(r"CERRAR", re.I)).first.click(timeout=3000)
+            page.get_by_role("button", name=re.compile(r"GUARDAR", re.I)).first.click(timeout=1500)
+        page.wait_for_timeout(150)
+        page.get_by_role("button", name=re.compile(r"CERRAR", re.I)).first.click(timeout=1500)
         LOG.info("ISR Ingresos: Total percibidos popup filled and closed")
-        page.wait_for_timeout(500)
+        page.wait_for_timeout(150)
     except Exception as e:
         LOG.warning("ISR Ingresos: Total percibidos CAPTURAR/popup failed: %s", e)
     LOG.info("ISR Ingresos form fill completed")
@@ -1623,18 +1780,17 @@ def _fill_select_next_to_label(
     scope_type = "iframe" if isinstance(scope, Frame) else "page"
     print(f"{_debug_ts()} [initial form DEBUG] Label={label_text!r} value={value_str!r} scope={scope_type}")
 
-    _SCROLL_TIMEOUT_MS = 300
-    _OPTION_CLICK_TIMEOUT_MS = 400
+    _SCROLL_TIMEOUT_MS = 200
+    _OPTION_CLICK_TIMEOUT_MS = 350
 
     def do_press_dropdown_then_click_option(dropdown) -> bool:
-        """Try fast path (select_option) first (~1s); else open dropdown and click option."""
+        """Try fast path (select_option) first; else open dropdown and click option."""
         try:
             dropdown.wait_for(state="visible", timeout=1000)
             try:
                 dropdown.scroll_into_view_if_needed(timeout=_SCROLL_TIMEOUT_MS)
             except Exception:
                 pass
-            # Fast path: native <select> — select_option without opening dropdown (~1s total)
             try:
                 dropdown.select_option(value=value_str, timeout=800)
                 return True
@@ -1645,10 +1801,9 @@ def _fill_select_next_to_label(
                 return True
             except Exception:
                 pass
-            # Slow path: open dropdown then select (for custom dropdowns)
-            page_for_wait.wait_for_timeout(20)
-            dropdown.click(timeout=800)
-            page_for_wait.wait_for_timeout(40)
+            page_for_wait.wait_for_timeout(80)
+            dropdown.click(timeout=600)
+            page_for_wait.wait_for_timeout(120)
             opt_by_value = dropdown.locator(f"option[value={repr(value_str)}]")
             if opt_by_value.count() > 0:
                 option = opt_by_value.first
@@ -1677,7 +1832,7 @@ def _fill_select_next_to_label(
             for i in range(loc.count()):
                 try:
                     el = loc.nth(i)
-                    el.wait_for(state="visible", timeout=300)
+                    el.wait_for(state="visible", timeout=400)
                     return el
                 except Exception:
                     continue
@@ -1717,7 +1872,7 @@ def _fill_select_next_to_label(
         for sel_str in sel_list:
             try:
                 loc = scope.locator(sel_str).first
-                loc.wait_for(state="visible", timeout=1200)
+                loc.wait_for(state="visible", timeout=1000)
                 dropdown = loc
                 break
             except Exception:
@@ -1730,7 +1885,7 @@ def _fill_select_next_to_label(
                 " and not(ancestor::select) and contains(., " + xpath_contains_arg + ")]"
             )
             label_el = scope.locator("xpath=" + xpath_label).last
-            label_el.wait_for(state="attached", timeout=1500)
+            label_el.wait_for(state="attached", timeout=1200)
             dropdown = resolve_dropdown_from_label(label_el)
         except Exception:
             pass
