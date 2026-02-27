@@ -1232,14 +1232,52 @@ def _click_capturar_total_percibidos(page: Page, scope: Page | Frame) -> bool:
     return False
 
 
+def _click_ver_detalle_isr_retenido(page_or_scope: Page | Frame) -> bool:
+    """Same logic as Phase 3 CAPTURAR: of all VER DETALLE on page, click the one whose row contains 'ISR retenido por personas morales'. Returns True if clicked."""
+    required_in_row = "ISR retenido por personas morales"
+    try:
+        for ver in page_or_scope.locator("a, button, [role='button']").filter(has_text=re.compile(r"VER DETALLE", re.I)).all():
+            try:
+                row = ver.locator("xpath=ancestor::tr[1] | ancestor::div[contains(@class,'row')][1]").first
+                if row.count() == 0:
+                    continue
+                row_text = row.inner_text(timeout=600) or ""
+                if required_in_row not in row_text:
+                    continue
+                if not ver.is_visible():
+                    continue
+                ver.scroll_into_view_if_needed(timeout=500)
+                page_for_click = page_or_scope.page if hasattr(page_or_scope, "page") else page_or_scope
+                if hasattr(page_for_click, "wait_for_timeout"):
+                    page_for_click.wait_for_timeout(200)
+                ver.click(timeout=2500)
+                return True
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return False
+
+
 def _click_ver_detalle_next_to_label(page_or_scope: Page | Frame, label_substring: str) -> bool:
-    """Find the label containing label_substring, then click the 'VER DETALLE' link/button in the same row. Returns True if clicked."""
+    """Find the label containing label_substring (prefer visible one when multiple), then click the 'VER DETALLE' in the same row. Returns True if clicked."""
     try:
         loc = page_or_scope.get_by_text(re.compile(re.escape(label_substring), re.I))
         if loc.count() == 0:
             return False
-        label_el = loc.first
-        label_el.wait_for(state="visible", timeout=1500)
+        label_el = None
+        for idx in range(loc.count()):
+            try:
+                el = loc.nth(idx)
+                el.wait_for(state="attached", timeout=500)
+                if el.is_visible():
+                    label_el = el
+                    break
+            except Exception:
+                continue
+        if label_el is None:
+            label_el = loc.first
+            label_el.wait_for(state="visible", timeout=1500)
     except Exception:
         return False
     for i in range(1, 10):
@@ -1247,17 +1285,16 @@ def _click_ver_detalle_next_to_label(page_or_scope: Page | Frame, label_substrin
             container = label_el.locator(f"xpath=(ancestor::*)[{i}]")
             if container.count() == 0:
                 break
-            ver_btns = container.first.locator("a, button").filter(has_text=re.compile(r"VER DETALLE", re.I))
-            n = ver_btns.count()
-            if n == 0:
+            ver_btns = container.first.locator("a, button, [role='button']").filter(has_text=re.compile(r"VER DETALLE", re.I))
+            if ver_btns.count() == 0:
                 continue
             ver_btn = ver_btns.first
-            ver_btn.wait_for(state="visible", timeout=500)
-            try:
-                ver_btn.scroll_into_view_if_needed(timeout=250)
-            except Exception:
-                pass
-            ver_btn.click()
+            ver_btn.wait_for(state="visible", timeout=800)
+            ver_btn.scroll_into_view_if_needed(timeout=400)
+            page_for_click = page_or_scope.page if hasattr(page_or_scope, "page") else page_or_scope
+            if hasattr(page_for_click, "wait_for_timeout"):
+                page_for_click.wait_for_timeout(200)
+            ver_btn.click(timeout=2500)
             return True
         except Exception:
             continue
@@ -1997,26 +2034,47 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
         isr_retenido_str = str(int(round(isr_retenido_parsed))) if isr_retenido_parsed is not None else "0"
 
         ver_detalle_clicked = False
-        LOG.info("Phase 4: clicking VER DETALLE (same row as label 'ISR retenido por personas morales', like CAPTURAR)")
+        LOG.info("Phase 4: clicking VER DETALLE (same row as label 'ISR retenido por personas morales', same logic as Phase 3 CAPTURAR)")
         try:
-            scope = _get_isr_ingresos_scope(page)
-            try:
-                scope.locator("#tab457maincontainer1").first.wait_for(state="attached", timeout=500)
-                tab_scope = scope.locator("#tab457maincontainer1").first
-            except Exception:
-                tab_scope = scope
-            ver_detalle_clicked = _click_ver_detalle_next_to_label(tab_scope, "ISR retenido por personas morales")
+            # Same logic as Phase 3: of all VER DETALLE, click the one whose row contains "ISR retenido por personas morales"
+            ver_detalle_clicked = _click_ver_detalle_isr_retenido(page)
             if not ver_detalle_clicked:
                 ver_detalle_clicked = _click_ver_detalle_next_to_label(page, "ISR retenido por personas morales")
+            if not ver_detalle_clicked:
+                try:
+                    scope = _get_isr_ingresos_scope(page)
+                    scope.locator("#tab457maincontainer1").first.wait_for(state="attached", timeout=500)
+                    tab_scope = scope.locator("#tab457maincontainer1").first
+                    ver_detalle_clicked = _click_ver_detalle_isr_retenido(tab_scope) or _click_ver_detalle_next_to_label(tab_scope, "ISR retenido por personas morales")
+                except Exception:
+                    pass
             if ver_detalle_clicked:
-                LOG.info("Phase 4: VER DETALLE clicked; popup should appear")
+                LOG.info("Phase 4: VER DETALLE clicked; waiting for popup to appear")
+                page.wait_for_timeout(500)
+                popup_visible = False
+                for _ in range(6):
+                    try:
+                        if page.get_by_role("dialog").first.is_visible():
+                            popup_visible = True
+                            break
+                        if page.get_by_text(re.compile(r"ISR retenido no acreditable", re.I)).first.is_visible():
+                            popup_visible = True
+                            break
+                    except Exception:
+                        pass
+                    page.wait_for_timeout(500)
+                if not popup_visible:
+                    LOG.warning("Phase 4: VER DETALLE was clicked but popup did not appear (dialog not visible); treating as failed")
+                    ver_detalle_clicked = False
+                else:
+                    LOG.info("Phase 4: popup appeared")
             else:
                 LOG.warning("Phase 4: could not click VER DETALLE next to ISR retenido por personas morales")
         except Exception as e:
             LOG.warning("Phase 4: VER DETALLE click failed: %s", e)
 
         if ver_detalle_clicked:
-            page.wait_for_timeout(400)
+            page.wait_for_timeout(200)
             LOG.info("Phase 4: looking for popup with label 'ISR retenido no acreditable'")
             # Resolve popup dialog (ISR retenido)
             dialog = None
@@ -2036,8 +2094,18 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
                 dialog = page
             filled = False
             try:
-                label_el = dialog.get_by_text(re.compile(r"ISR retenido no acreditable", re.I)).first
-                label_el.wait_for(state="visible", timeout=1000)
+                # Use visible label only (avoid hidden one e.g. for="nombre" in search box)
+                label_el = None
+                for el in dialog.get_by_text(re.compile(r"ISR retenido no acreditable", re.I)).all():
+                    try:
+                        if el.is_visible():
+                            label_el = el
+                            break
+                    except Exception:
+                        continue
+                if label_el is None:
+                    label_el = dialog.get_by_text(re.compile(r"ISR retenido no acreditable", re.I)).first
+                    label_el.wait_for(state="visible", timeout=2000)
                 LOG.info("Phase 4: found label 'ISR retenido no acreditable'; filling textbox to the right with value=%s from Excel", isr_retenido_str)
                 for xpath in [
                     "xpath=((ancestor::td | ancestor::th)[1])/following-sibling::*//input",
@@ -2527,10 +2595,25 @@ def run(
                         page.wait_for_timeout(10000)
                         return True
                     finally:
-                        logout_sat(page, mapping)
                         _run_context = None
-                        context.close()
-                        browser.close()
+                        def _cleanup() -> None:
+                            try:
+                                logout_sat(page, mapping)
+                            except Exception as e:
+                                LOG.debug("Logout during cleanup: %s", e)
+                            try:
+                                context.close()
+                            except Exception as e:
+                                LOG.debug("Context close: %s", e)
+                            try:
+                                browser.close()
+                            except Exception as e:
+                                LOG.debug("Browser close: %s", e)
+                        cleanup_thread = threading.Thread(target=_cleanup, daemon=True)
+                        cleanup_thread.start()
+                        cleanup_thread.join(timeout=5.0)
+                        if cleanup_thread.is_alive():
+                            LOG.info("Cleanup did not finish in 5s; exiting anyway.")
             except Exception as e:
                 LOG.exception("Test login failed")
                 print(str(e), file=sys.stderr)
@@ -2574,10 +2657,25 @@ def run(
                         page.wait_for_timeout(10000)
                         return True
                     finally:
-                        logout_sat(page, mapping)
                         _run_context = None
-                        context.close()
-                        browser.close()
+                        def _cleanup() -> None:
+                            try:
+                                logout_sat(page, mapping)
+                            except Exception as e:
+                                LOG.debug("Logout during cleanup: %s", e)
+                            try:
+                                context.close()
+                            except Exception as e:
+                                LOG.debug("Context close: %s", e)
+                            try:
+                                browser.close()
+                            except Exception as e:
+                                LOG.debug("Browser close: %s", e)
+                        cleanup_thread = threading.Thread(target=_cleanup, daemon=True)
+                        cleanup_thread.start()
+                        cleanup_thread.join(timeout=5.0)
+                        if cleanup_thread.is_alive():
+                            LOG.info("Cleanup did not finish in 5s; exiting anyway.")
             except Exception as e:
                 LOG.exception("Test initial form failed")
                 print(str(e), file=sys.stderr)
@@ -2638,10 +2736,25 @@ def run(
                         page.wait_for_timeout(10000)
                         return True
                     finally:
-                        logout_sat(page, mapping)
                         _run_context = None
-                        context.close()
-                        browser.close()
+                        def _cleanup() -> None:
+                            try:
+                                logout_sat(page, mapping)
+                            except Exception as e:
+                                LOG.debug("Logout during cleanup: %s", e)
+                            try:
+                                context.close()
+                            except Exception as e:
+                                LOG.debug("Context close: %s", e)
+                            try:
+                                browser.close()
+                            except Exception as e:
+                                LOG.debug("Browser close: %s", e)
+                        cleanup_thread = threading.Thread(target=_cleanup, daemon=True)
+                        cleanup_thread.start()
+                        cleanup_thread.join(timeout=5.0)
+                        if cleanup_thread.is_alive():
+                            LOG.info("Cleanup (logout/close) did not finish in 5s; exiting anyway.")
             except Exception as e:
                 LOG.exception("Test full run failed")
                 print(str(e), file=sys.stderr)
@@ -2703,10 +2816,25 @@ def run(
                         page.wait_for_timeout(10000)
                         return True
                     finally:
-                        logout_sat(page, mapping)
                         _run_context = None
-                        context.close()
-                        browser.close()
+                        def _cleanup() -> None:
+                            try:
+                                logout_sat(page, mapping)
+                            except Exception as e:
+                                LOG.debug("Logout during cleanup: %s", e)
+                            try:
+                                context.close()
+                            except Exception as e:
+                                LOG.debug("Context close: %s", e)
+                            try:
+                                browser.close()
+                            except Exception as e:
+                                LOG.debug("Browser close: %s", e)
+                        cleanup_thread = threading.Thread(target=_cleanup, daemon=True)
+                        cleanup_thread.start()
+                        cleanup_thread.join(timeout=5.0)
+                        if cleanup_thread.is_alive():
+                            LOG.info("Cleanup did not finish in 5s; exiting anyway.")
             except Exception as e:
                 LOG.exception("Test phase 3 failed")
                 print(str(e), file=sys.stderr)
@@ -2873,7 +3001,8 @@ def main() -> None:
             mapping_path=args.mapping,
             test_full=True,
         )
-        sys.exit(0 if success else 1)
+        # Force exit so process does not hang after browser close (Playwright may leave driver alive)
+        os._exit(0 if success else 1)
 
     if args.test_phase3:
         workbook = args.workbook
