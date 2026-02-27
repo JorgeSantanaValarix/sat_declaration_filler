@@ -19,6 +19,7 @@
   "_isr_ingresos_capturar_descuentos": ["#contenedor-457modal9 >> a:has-text('CAPTURAR')", "#contenedor-457modal9 >> a:has-text('Capturar')", "#contenedor-457modal9 a.btn-detalle", "text=Descuentos >> .. >> a:has-text('CAPTURAR')", "text=Descuentos >> .. >> a:has-text('Capturar')"],
   "_isr_ingresos_disminuir": ["#457select48", "select[id='457select48']", "label=¿Tienes ingresos a disminuir?"],
   "_isr_ingresos_adicionales": ["#457select59", "select[id='457select59']", "label=¿Tienes ingresos adicionales?"],
+  "_isr_ingresos_total_cobrados": ["label=Total de ingresos efectivamente cobrados", "input[id*='457'][id*='textbox']", "#tab457maincontainer1 >> input"],
   "_isr_ingresos_capturar_total": ["#contenedor-457modal70 >> a:has-text('CAPTURAR')", "#contenedor-457modal70 >> a:has-text('Capturar')", "#contenedor-457modal70 a.btn-detalle", "text=Total de ingresos percibidos >> .. >> a:has-text('CAPTURAR')", "text=Total de ingresos percibidos >> .. >> a:has-text('Capturar')"],
   "_popup_guardar": ["button:has-text('GUARDAR')", "input[value='GUARDAR']"],
   "initial_ejercicio": ["#ejercicio", "#MainContent_wucConfigDeclaracion_wucDdlEjercicioFiscal_ddlCatalogo", "select[id*='EjercicioFiscal']", "select[name*='EjercicioFiscal']", "select[name*='wucDdlEjercicioFiscal']", "label=Ejercicio", "select[name*='ejercicio']", "[id*='Ejercicio']"],

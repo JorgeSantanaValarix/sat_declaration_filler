@@ -14,6 +14,7 @@ import os
 import re
 import signal
 import sys
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -48,11 +49,14 @@ LOG = logging.getLogger("sat_declaration_filler")
 
 
 def _parse_currency(val) -> float:
-    """Parse Excel currency (e.g. '$ 1,132,090' or '$ -') to float."""
+    """Parse Excel currency (e.g. '$ 1,132,090' or '$ -') to float. Handles formula cached values and datetime (returns 0.0)."""
     if val is None:
         return 0.0
     if isinstance(val, (int, float)):
         return float(val)
+    # Excel may store dates as datetime; don't treat as currency
+    if hasattr(val, "year") and hasattr(val, "month"):
+        return 0.0
     s = str(val).strip().replace("$", "").replace(",", "").strip()
     if not s or s == "-":
         return 0.0
@@ -71,34 +75,219 @@ def _cell_value(cell) -> str | float | None:
     return str(v).strip()
 
 
+def _parse_cell_ref(formula: str) -> tuple[int, int] | None:
+    """Parse simple formula like =F8 or =+F8 to (row, col). Column A=1, B=2, ..., F=6. Returns None if not a simple cell ref."""
+    if not formula or not isinstance(formula, str):
+        return None
+    s = formula.strip().lstrip("=+").strip().upper()
+    m = re.match(r"^([A-Z]+)(\d+)$", s)
+    if not m:
+        return None
+    col_letters, row_str = m.group(1), m.group(2)
+    col = 0
+    for c in col_letters:
+        col = col * 26 + (ord(c) - ord("A") + 1)
+    return (int(row_str), col)
+
+
+def _row_col_to_a1(row: int, col: int) -> str:
+    """Convert 1-based (row, col) to Excel A1 notation (e.g. (8, 6) -> 'F8')."""
+    s = ""
+    c = col
+    while c:
+        c, r = divmod(c - 1, 26)
+        s = chr(ord("A") + r) + s
+    return (s or "A") + str(row)
+
+
+_XLCALC_IMPORT_FAILED: bool | None = None  # None=not tried, True=failed, False=ok
+_XLCALC_TIMEOUT_SEC = 12  # skip xlcalculator if loading takes longer (avoids freeze on large workbooks)
+
+
+def _xlcalculator_evaluator(workbook_path: str):
+    """
+    Build xlcalculator model once (can be slow/hang). Runs with timeout; returns (Evaluator, None) or (None, error_msg).
+    """
+    global _XLCALC_IMPORT_FAILED
+    try:
+        from xlcalculator import ModelCompiler, Evaluator
+    except ImportError:
+        if _XLCALC_IMPORT_FAILED is None:
+            _XLCALC_IMPORT_FAILED = True
+            LOG.info("xlcalculator not installed; formula fallback disabled. Install with: pip install xlcalculator")
+        return None, "not installed"
+    if _XLCALC_IMPORT_FAILED is None:
+        _XLCALC_IMPORT_FAILED = False
+
+    result: list = []  # [evaluator] or [] on error; error_msg in err[0]
+    err: list = []
+
+    def _build():
+        try:
+            path = os.path.abspath(workbook_path)
+            compiler = ModelCompiler()
+            model = compiler.read_and_parse_archive(path, build_code=True)
+            result.append(Evaluator(model))
+        except Exception as e:
+            err.append(str(e))
+
+    LOG.info("xlcalculator: loading workbook (timeout %ss)...", _XLCALC_TIMEOUT_SEC)
+    t = threading.Thread(target=_build, daemon=True)
+    t.start()
+    t.join(timeout=_XLCALC_TIMEOUT_SEC)
+    if t.is_alive():
+        LOG.warning("xlcalculator: loading timed out after %ss; skipping formula fallback", _XLCALC_TIMEOUT_SEC)
+        return None, "timeout"
+    if err:
+        return None, err[0]
+    if result:
+        return result[0], None
+    return None, "unknown"
+
+
+def _evaluate_cell(evaluator, sheet_name: str, row: int, col: int) -> float | None:
+    """Evaluate one cell with an existing xlcalculator Evaluator. Returns float or None."""
+    try:
+        cell_ref = f"{sheet_name}!{_row_col_to_a1(row, col)}"
+        result = evaluator.evaluate(cell_ref)
+        if result is None:
+            LOG.info("xlcalculator %s returned None", cell_ref)
+            return None
+        return _parse_currency(result)
+    except Exception as e:
+        LOG.info("xlcalculator evaluate %s!%s: %s", sheet_name, _row_col_to_a1(row, col), e)
+        return None
+
+
 def read_impuestos(workbook_path: str) -> dict:
     """
-    Read Impuestos tab: labels in column D, values in column E.
-    D4:E29 = ISR, D33:E58 = IVA.
+    Read Impuestos tab. Two layouts supported:
+    - Layout 1: label in column D, value in column E (D4:E29 ISR, D33:E58 IVA).
+    - Layout 2: label in column E, value in column F (same row ranges).
+    Values in E or F can be numeric or formulas. We use data_only=True so formula cells
+    return the cached result (what you see in Excel). If the file was not saved in Excel
+    and the cache is missing, we resolve simple refs (e.g. =F8, =+E8) by following the reference.
     Returns dict with keys: label_map (label->value), year, month, periodicidad, tipo_declaracion.
-    Period from filename YYYYMM_... when possible.
     """
     wb = openpyxl.load_workbook(workbook_path, read_only=False, data_only=True)
     if IMPUESTOS_SHEET not in wb.sheetnames:
         raise ValueError(f"Sheet '{IMPUESTOS_SHEET}' not found in workbook. Sheets: {wb.sheetnames}")
     ws = wb[IMPUESTOS_SHEET]
     label_map = {}
+    formula_cells: list[tuple[str, int, int]] = []  # (label, row, col) where value was None
 
-    for start_row, end_row in (ISR_RANGE, IVA_RANGE):
-        for row in range(start_row, end_row + 1):
-            label_cell = ws.cell(row=row, column=4)   # D
-            value_cell = ws.cell(row=row, column=5)   # E
-            label = _cell_value(label_cell)
-            if not label or not str(label).strip():
-                continue
-            label = str(label).strip()
-            raw = value_cell.value
+    def add_label_value(label: str, raw, row: int | None = None, col: int | None = None) -> None:
+        if not label or not str(label).strip():
+            return
+        label = str(label).strip()
+        if raw is not None and not (isinstance(raw, str) and not raw.strip()):
             if isinstance(raw, (int, float)):
                 label_map[label] = float(raw)
             else:
                 label_map[label] = _parse_currency(raw)
+        elif row is not None and col is not None:
+            formula_cells.append((label, row, col))
+
+    for start_row, end_row in (ISR_RANGE, IVA_RANGE):
+        for row in range(start_row, end_row + 1):
+            # Layout 1: D = label, E = value
+            label_d = _cell_value(ws.cell(row=row, column=4))
+            value_e = ws.cell(row=row, column=5).value
+            add_label_value(label_d, value_e, row=row, col=5)
+            # Layout 2: E = label, F = value (only when E looks like text)
+            label_e_cell = ws.cell(row=row, column=5)
+            value_f_cell = ws.cell(row=row, column=6)
+            label_e = _cell_value(label_e_cell)
+            value_f = value_f_cell.value
+            if label_e is not None and str(label_e).strip():
+                label_e_str = str(label_e).strip()
+                if not re.match(r"^[\d\s\$,.\-]+$", label_e_str):
+                    add_label_value(label_e, value_f, row=row, col=6)
+
+    # Resolve formula cells to get value-as-displayed (e.g. =+F8 -> value of F8; resolve ref recursively if it's a formula)
+    # With data_only=True, formula cells often have a cached value (what you see in Excel); if missing, we resolve simple refs.
+    def _cell_display_value(ws_data, ws_formula, r: int, c: int, visited: set | None = None) -> float:
+        visited = visited or set()
+        key = (r, c)
+        if key in visited:
+            return 0.0
+        visited.add(key)
+        raw = ws_data.cell(row=r, column=c).value
+        # Use cached value if present (what user sees when file was saved in Excel) — works for both literal and formula cells
+        if raw is not None and not (isinstance(raw, str) and str(raw).strip().startswith("=")):
+            return _parse_currency(raw)
+        # No cached value: resolve formula or use literal from formula sheet
+        formula = ws_formula.cell(row=r, column=c).value
+        if isinstance(formula, (int, float)):
+            return float(formula)
+        ref = _parse_cell_ref(formula) if isinstance(formula, str) else None
+        if ref:
+            r2, c2 = ref
+            return _cell_display_value(ws_data, ws_formula, r2, c2, visited)
+        return 0.0
+
+    if formula_cells:
+        try:
+            wb_formula = openpyxl.load_workbook(workbook_path, read_only=False, data_only=False)
+            ws_formula = wb_formula[IMPUESTOS_SHEET]
+            for label, row, col in formula_cells:
+                formula = ws_formula.cell(row=row, column=col).value
+                ref = _parse_cell_ref(formula) if isinstance(formula, str) else None
+                if ref:
+                    r2, c2 = ref
+                    val = _cell_display_value(ws, ws_formula, r2, c2)
+                    label_map[label] = val
+                    LOG.info("Excel formula resolved (value as displayed): %r at (%s,%s) -> ref %s = %.2f", formula, row, col, ref, val)
+                    if val == 0.0 and label == "Base gravable del pago provisional":
+                        fallback = label_map.get("Ingresos cobrados y amparados por factura del mes")
+                        if fallback is not None and _parse_currency(fallback) != 0.0:
+                            label_map[label] = _parse_currency(fallback)
+                            LOG.info("Excel: using fallback for Base gravable: %.2f", label_map[label])
+            wb_formula.close()
+        except Exception as e:
+            LOG.warning("Could not resolve formula cells: %s", e)
 
     wb.close()
+
+    # Optional: when openpyxl gave 0.0 or no value, try xlcalculator (build model once, then evaluate each cell)
+    evaluator, xlcalc_err = _xlcalculator_evaluator(workbook_path)
+    if xlcalc_err and evaluator is None:
+        if xlcalc_err != "not installed":
+            LOG.warning("xlcalculator: %s", xlcalc_err)
+    elif evaluator is not None:
+        for label, row, col in formula_cells:
+            current = label_map.get(label)
+            if current is not None and abs(float(current)) > 1e-9:
+                continue  # keep existing non-zero value from cache/simple-ref
+            xval = _evaluate_cell(evaluator, IMPUESTOS_SHEET, row, col)
+            # If formula cell (e.g. F9 =+F8) didn't evaluate, try the referenced cell (F8) directly
+            if xval is None:
+                try:
+                    wb_f = openpyxl.load_workbook(workbook_path, read_only=False, data_only=False)
+                    ws_f = wb_f[IMPUESTOS_SHEET]
+                    formula = ws_f.cell(row=row, column=col).value
+                    wb_f.close()
+                    ref = _parse_cell_ref(formula) if isinstance(formula, str) else None
+                    if ref:
+                        r2, c2 = ref
+                        xval = _evaluate_cell(evaluator, IMPUESTOS_SHEET, r2, c2)
+                except Exception as e:
+                    LOG.debug("xlcalculator ref fallback for (%s,%s): %s", row, col, e)
+            if xval is not None:
+                label_map[label] = xval
+                LOG.info("Excel value (xlcalculator): %r at (%s,%s) = %.2f", label, row, col, xval)
+            else:
+                LOG.info("xlcalculator: no value for %r at (%s,%s) (tried cell and ref fallback)", label, row, col)
+
+    LOG.info(
+        "Excel opened: %s | Sheet=%s, layouts D/E and E/F, rows ISR %s–%s, IVA %s–%s | %s labels read. "
+        "'Base gravable del pago provisional' in sheet: %s",
+        workbook_path, IMPUESTOS_SHEET, ISR_RANGE[0], ISR_RANGE[1], IVA_RANGE[0], IVA_RANGE[1],
+        len(label_map), "Base gravable del pago provisional" in label_map,
+    )
+    if label_map and "Base gravable del pago provisional" not in label_map:
+        sample = [k for k in list(label_map.keys())[:15]]
+        LOG.info("Impuestos column D labels (sample): %s", sample)
 
     # Period from filename: YYYYMM_CustomerRfc_Hoja de Trabajo.xlsx
     year, month = None, None
@@ -719,6 +908,174 @@ def _get_isr_ingresos_scope(page: Page) -> Page:
     return page
 
 
+def _read_sat_total_ingresos_cobrados(page: Page, scope: Page, mapping: dict | None = None) -> float:
+    """Read the value from SAT form section 'Total de ingresos efectivamente cobrados' (textbox/field in Ingresos tab). Ignores hidden modal. Returns 0.0 if not found."""
+    sat_label = "Total de ingresos efectivamente cobrados"
+    # If mapping has a selector for this field, try it first
+    if mapping:
+        for sel in mapping.get("_isr_ingresos_total_cobrados") or []:
+            try:
+                el = scope.locator(sel).first
+                el.wait_for(state="visible", timeout=2000)
+                raw = el.get_attribute("value") or el.input_value() or el.inner_text()
+                parsed = _parse_currency(raw)
+                if parsed != 0.0 or (raw and re.search(r"[\d,]", str(raw))):
+                    LOG.info("[Phase3 DEBUG] SAT value: section=%r (mapping %r), raw=%r, parsed=%.2f", sat_label, sel, raw, parsed)
+                    return parsed
+            except Exception:
+                continue
+    # Prefer scope to main tab content so we don't match the hidden modal title
+    tab_scope = scope.locator("#tab457maincontainer1").first if scope.locator("#tab457maincontainer1").count() > 0 else scope
+    try:
+        label_el = None
+        for el in tab_scope.get_by_text(re.compile(r"Total de ingresos efectivamente cobrados", re.I)).all():
+            try:
+                if el.is_visible():
+                    label_el = el
+                    break
+            except Exception:
+                continue
+        if label_el is None:
+            for el in scope.get_by_text(re.compile(r"Total de ingresos efectivamente cobrados", re.I)).all():
+                try:
+                    if el.is_visible():
+                        label_el = el
+                        break
+                except Exception:
+                    continue
+        if label_el is None:
+            raise RuntimeError("No visible label 'Total de ingresos efectivamente cobrados' found")
+        # Label's "for" attribute points to input id (SAT often uses this)
+        try:
+            for_id = label_el.get_attribute("for")
+            if for_id and for_id.strip():
+                inp = tab_scope.locator(f"#{re.escape(for_id.strip())}").first
+                if inp.count() > 0:
+                    inp.wait_for(state="visible", timeout=2000)
+                    raw = inp.get_attribute("value") or inp.input_value() or inp.inner_text()
+                    parsed = _parse_currency(raw)
+                    if parsed != 0.0 or (raw and re.search(r"[\d,]", str(raw))):
+                        LOG.info("[Phase3 DEBUG] SAT value: section=%r (label for=), raw=%r, parsed=%.2f", sat_label, raw, parsed)
+                        return parsed
+        except Exception:
+            pass
+        # Input(s) after the label in DOM order (SAT form: label then input with value 66,264; sometimes 2nd or 3rd input)
+        for input_index in range(1, 5):
+            try:
+                following_input = label_el.locator(f"xpath=following::input[{input_index}]")
+                if following_input.count() > 0:
+                    following_input.first.wait_for(state="visible", timeout=1500)
+                    raw = following_input.first.get_attribute("value") or following_input.first.input_value() or following_input.first.inner_text()
+                    parsed = _parse_currency(raw)
+                    if parsed > 0 or (raw and re.search(r"[\d,]", str(raw))):
+                        LOG.info("[Phase3 DEBUG] SAT value: section=%r (following::input[%s]), raw=%r, parsed=%.2f", sat_label, input_index, raw, parsed)
+                        return parsed
+            except Exception:
+                continue
+        # First try whole row text (works when value is in span/div next to label)
+        for _ in range(2):
+            try:
+                row = label_el.locator("xpath=ancestor::tr[1]").first
+                row.wait_for(state="visible", timeout=2000)
+                row_text = row.inner_text()
+                # Match number with optional commas: 66,264 or 66264
+                m = re.search(r"[\d][\d,]*\.?\d*", row_text.replace(" ", ""))
+                if m:
+                    raw = m.group(0)
+                    parsed = _parse_currency(raw)
+                    if parsed > 0 or re.search(r"[\d]", raw):
+                        LOG.info("[Phase3 DEBUG] SAT value: section=%r (from row text), raw=%r, parsed=%.2f", sat_label, raw, parsed)
+                        return parsed
+            except Exception:
+                break
+        # Try input in same row
+        for xpath in [
+            "xpath=((ancestor::td | ancestor::th)[1])/following-sibling::*//input",
+            "xpath=(ancestor::tr[1])//input",
+            "xpath=following-sibling::*//input",
+            "xpath=..//input",
+        ]:
+            try:
+                inp = label_el.locator(xpath).first
+                inp.wait_for(state="visible", timeout=1500)
+                raw = inp.get_attribute("value") or inp.inner_text()
+                parsed = _parse_currency(raw)
+                if parsed != 0.0 or (raw and re.search(r"[\d,]", str(raw))):
+                    LOG.info("[Phase3 DEBUG] SAT value: section=%r, raw=%r, parsed=%.2f", sat_label, raw, parsed)
+                    return parsed
+            except Exception:
+                continue
+        # Sibling/div with number
+        for xpath in [
+            "xpath=((ancestor::td | ancestor::th)[1])/following-sibling::*",
+            "xpath=following-sibling::*",
+        ]:
+            try:
+                val_el = label_el.locator(xpath).first
+                val_el.wait_for(state="visible", timeout=1500)
+                raw = val_el.inner_text()
+                parsed = _parse_currency(raw)
+                if parsed != 0.0 or re.search(r"[\d,]", str(raw)):
+                    LOG.info("[Phase3 DEBUG] SAT value: section=%r (sibling), raw=%r, parsed=%.2f", sat_label, raw, parsed)
+                    return parsed
+            except Exception:
+                continue
+        # Try get_by_label in full scope (control may not be inside tab container)
+        for try_scope in (scope, tab_scope):
+            try:
+                control = try_scope.get_by_label(re.compile(r"Total de ingresos efectivamente cobrados", re.I)).first
+                control.wait_for(state="visible", timeout=1500)
+                raw = control.get_attribute("value")
+                if not raw or (isinstance(raw, str) and not raw.strip()):
+                    try:
+                        raw = control.input_value()
+                    except Exception:
+                        raw = control.inner_text() or ""
+                raw = raw or control.inner_text()
+                parsed = _parse_currency(raw)
+                LOG.info("[Phase3 DEBUG] SAT value: section=%r (get_by_label), raw=%r, parsed=%.2f", sat_label, raw, parsed)
+                return parsed
+            except Exception:
+                continue
+        # SAT tab 457: try any visible input in tab that has a numeric value (prefilled total is often the only one)
+        try:
+            for inp in tab_scope.locator("input[type='text'], input[type='number'], input:not([type])").all():
+                try:
+                    if not inp.is_visible():
+                        continue
+                    raw = inp.get_attribute("value") or inp.input_value() or ""
+                    parsed = _parse_currency(raw)
+                    if parsed > 0 and re.search(r"[\d,]", str(raw)):
+                        LOG.info("[Phase3 DEBUG] SAT value: section=%r (tab input), raw=%r, parsed=%.2f", sat_label, raw, parsed)
+                        return parsed
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        # Last resort: any visible input/span in same table or container that contains a number
+        try:
+            container = label_el.locator("xpath=ancestor::table[1] | ancestor::*[contains(@class,'tab')][1] | ancestor::*[@id][1]").first
+            for sel in ["input[type='text']", "input[type='number']", "span", "[role='textbox']"]:
+                for node in container.locator(sel).all():
+                    try:
+                        if not node.is_visible():
+                            continue
+                        raw = node.get_attribute("value") or node.inner_text()
+                        parsed = _parse_currency(raw)
+                        if parsed > 0 and re.search(r"[\d,]", str(raw)):
+                            LOG.info("[Phase3 DEBUG] SAT value: section=%r (container), raw=%r, parsed=%.2f", sat_label, raw, parsed)
+                            return parsed
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+        LOG.warning("[Phase3 DEBUG] SAT value: %r not found in form (all strategies failed); using 0.0 for comparison", sat_label)
+        return 0.0
+    except Exception as e:
+        LOG.info("[Phase3 DEBUG] SAT value: section=%r — could not read (returning 0.0): %s", sat_label, e)
+        return 0.0
+
+
 def _click_capturar_next_to_label(page: Page, label_substring: str) -> bool:
     """Find the label containing label_substring, then click the CAPTURAR link/button in the same row or container. Returns True if clicked."""
     try:
@@ -758,16 +1115,48 @@ def _set_dropdown_by_label_scope(scope: Page | Frame, page_for_click: Page, labe
 
 
 def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
-    """Fill ISR simplificado Ingresos form: copropiedad (Sí/No), Descuentos CAPTURAR popup, ingresos a disminuir/adicionales (Sí/No), Total percibidos CAPTURAR popup. See FILL THE FORM ON SAT.pdf pp 25-42."""
+    """Fill ISR simplificado Ingresos form. Phase 3 (ISR simplificado de confianza. Personas físicas):
+    - *¿Los ingresos fueron obtenidos a través de copropiedad? → always "No"
+    - Total de ingresos efectivamente cobrados → skip (prefilled, no action)
+    - Descuentos, devoluciones y bonificaciones → CAPTURAR → popup: set *Descuentos...integrantes por copropiedad to 0 → CERRAR
+    - ¿Tienes ingresos a disminuir? → if (SAT Total de ingresos efectivamente cobrados - Excel Total de ingresos acumulados) > 1 then Sí + CAPTURAR popup (AGREGAR → Concepto "Ingresos facturados pendientes de cancelacion con aceptacion del receptor" → Importe = difference → GUARDAR → CERRAR); else No
+    - ¿Tienes ingresos adicionales? → if (Excel Total de ingresos acumulados - SAT Total de ingresos efectivamente cobrados) > 1 then Sí + CAPTURAR popup (AGREGAR → Concepto "Ingresos no considerados en el prellenado" → Importe = difference → GUARDAR → CERRAR); else No
+    - Then Total percibidos CAPTURAR popup."""
     LOG.info("Filling ISR Ingresos form...")
     label_map = data.get("label_map") or {}
-    copropiedad = data.get("isr_ingresos_copropiedad") or "No"
+    # Always "No" per requirements for *¿Los ingresos fueron obtenidos a través de copropiedad?
+    copropiedad = "No"
+    # Descuentos popup: value for *Descuentos, devoluciones y bonificaciones de integrantes por copropiedad (0 if not in Excel)
     descuentos_copropiedad = label_map.get("Descuentos devoluciones y bonificaciones de integrantes por copropiedad")
     if descuentos_copropiedad is None:
         descuentos_copropiedad = 0
-    ingresos_a_disminuir = data.get("isr_ingresos_a_disminuir") or "No"
-    ingresos_adicionales = data.get("isr_ingresos_adicionales") or "No"
-    importe_total = label_map.get("Total de ingresos acumulados") or label_map.get("Ingresos nominales facturados")
+    # Excel value for "Total de ingresos" (Impuestos tab col D→E); compared with SAT "Total de ingresos efectivamente cobrados"
+    # Primary: row with "Base gravable del pago provisional" (col D = label, col E = value); fallbacks for other templates
+    excel_label_1 = "Base gravable del pago provisional"
+    excel_label_2 = "Ingresos cobrados y amparados por factura del mes"
+    excel_label_3 = "Total de ingresos acumulados"
+    excel_label_4 = "Ingresos nominales facturados"
+    # Use first label that has a value (including 0.0); 'or' would treat 0.0 as missing
+    _v1, _v2, _v3, _v4 = label_map.get(excel_label_1), label_map.get(excel_label_2), label_map.get(excel_label_3), label_map.get(excel_label_4)
+    used_key = (
+        excel_label_1 if _v1 is not None
+        else (excel_label_2 if _v2 is not None
+              else (excel_label_3 if _v3 is not None
+                    else (excel_label_4 if _v4 is not None else None)))
+    )
+    excel_total_cobrados_raw = _v1 if _v1 is not None else (_v2 if _v2 is not None else (_v3 if _v3 is not None else _v4))
+    excel_total_cobrados = _parse_currency(excel_total_cobrados_raw)
+    workbook_path = data.get("workbook_path") or "(workbook path not set)"
+    LOG.info(
+        "[Phase3 DEBUG] Excel: workbook=%s | Sheet=Impuestos (layout: D/E or E/F). "
+        "Row used: label=%r, value=%s → parsed=%.2f",
+        workbook_path, used_key, excel_total_cobrados_raw, excel_total_cobrados,
+    )
+    LOG.info(
+        "[Phase3 DEBUG] Excel values found: %r=%s, %r=%s, %r=%s, %r=%s",
+        excel_label_1, _v1, excel_label_2, _v2, excel_label_3, _v3, excel_label_4, _v4,
+    )
+    importe_total = _v1 if _v1 is not None else (_v2 if _v2 is not None else (_v3 if _v3 is not None else _v4))
     if importe_total is None:
         importe_total = 0
     try:
@@ -798,8 +1187,8 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
     else:
         LOG.warning("ISR Ingresos: could not set copropiedad dropdown")
     page.wait_for_timeout(300)
-    # 2. Total de ingresos efectivamente cobrados - prefilled, skip
-    # 3. Descuentos, devoluciones y bonificaciones: press CAPTURAR next to field → popup → fill *Descuentos...integrantes por copropiedad → CERRAR
+    # 2. Total de ingresos efectivamente cobrados — no need to fill or do anything (prefilled, skip)
+    # 3. Descuentos, devoluciones y bonificaciones: press CAPTURAR → popup: add "0" on *Descuentos, devoluciones y bonificaciones de integrantes por copropiedad → CERRAR
     try:
         capturar_clicked = _try_click(page, mapping, "_isr_ingresos_capturar_descuentos")
         if not capturar_clicked:
@@ -906,21 +1295,124 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
         page.wait_for_timeout(500)
     except Exception as e:
         LOG.warning("ISR Ingresos: Descuentos CAPTURAR/popup failed: %s", e)
-    # 4. ¿Tienes ingresos a disminuir? — find dropdown by label (phase-2 style)
-    _si_d = ingresos_a_disminuir.strip().lower() in ("sí", "si", "yes")
-    si_no_disminuir_lbl = "Sí" if _si_d else "No"
+    # 4. ¿Tienes ingresos a disminuir? — compare SAT "Total de ingresos efectivamente cobrados" vs Excel (Total de ingresos acumulados); if SAT - Excel > 1 → Sí + CAPTURAR popup
+    sat_total_cobrados = _read_sat_total_ingresos_cobrados(page, scope, mapping)
+    sat_total_cobrados = float(sat_total_cobrados) if sat_total_cobrados is not None else 0.0
+    excel_total_cobrados = float(excel_total_cobrados) if excel_total_cobrados is not None else 0.0
+    LOG.info("[Phase3 DEBUG] Comparison for *¿Tienes ingresos a disminuir? / *¿Tienes ingresos adicionales?: SAT=%.2f, Excel=%.2f", sat_total_cobrados, excel_total_cobrados)
+    diferencia = sat_total_cobrados - excel_total_cobrados
+    need_ingresos_a_disminuir = diferencia > 1
+    si_no_disminuir_lbl = "Sí" if need_ingresos_a_disminuir else "No"
     if _fill_select_next_to_label(scope, page, "ingresos a disminuir", si_no_disminuir_lbl, mapping=None, initial_dropdown_key=None):
-        LOG.info("ISR Ingresos: ingresos a disminuir = %s (dropdown)", si_no_disminuir_lbl)
+        LOG.info("ISR Ingresos: ingresos a disminuir = %s (SAT=%.2f Excel=%.2f diff=%.2f)", si_no_disminuir_lbl, sat_total_cobrados, excel_total_cobrados, diferencia)
     else:
         LOG.warning("ISR Ingresos: could not set ingresos a disminuir dropdown")
     page.wait_for_timeout(300)
-    # 5. ¿Tienes ingresos adicionales? — find dropdown by label (phase-2 style)
-    _si_a = ingresos_adicionales.strip().lower() in ("sí", "si", "yes")
-    si_no_adicionales_lbl = "Sí" if _si_a else "No"
-    if _fill_select_next_to_label(scope, page, "ingresos adicionales", si_no_adicionales_lbl, mapping=None, initial_dropdown_key=None):
-        LOG.info("ISR Ingresos: ingresos adicionales = %s (dropdown)", si_no_adicionales_lbl)
+    if need_ingresos_a_disminuir:
+        # *Ingresos a disminuir appears: CAPTURAR → popup AGREGAR → Concepto "Ingresos facturados pendientes de cancelacion con aceptacion del receptor" → Importe = difference → GUARDAR → CERRAR
+        try:
+            capturar_clicked = _click_capturar_next_to_label(page, "Ingresos a disminuir")
+            if capturar_clicked:
+                page.wait_for_timeout(1500)
+                try:
+                    page.get_by_role("button", name=re.compile(r"AGREGAR", re.I)).first.click(timeout=3000)
+                    page.wait_for_timeout(500)
+                except Exception:
+                    pass
+                diferencia_str = f"{diferencia:,.2f}".replace(",", "")
+                try:
+                    concepto_dd = page.get_by_label(re.compile(r"Concepto", re.I)).first
+                    concepto_dd.wait_for(state="visible", timeout=4000)
+                    # Option: "Ingresos facturados pendientes de cancelacion con aceptacion del receptor" (SAT may use with or without accents)
+                    concepto_dd.select_option(label=re.compile(r"Ingresos facturados pendientes de cancelaci[oó]n con aceptaci[oó]n del receptor", re.I))
+                    page.wait_for_timeout(200)
+                except Exception:
+                    try:
+                        page.locator("select").first.select_option(label=re.compile(r"pendientes de cancelaci", re.I))
+                        page.wait_for_timeout(200)
+                    except Exception:
+                        pass
+                try:
+                    importe_inp = page.get_by_label(re.compile(r"Importe", re.I)).first
+                    importe_inp.wait_for(state="visible", timeout=2000)
+                    importe_inp.fill(diferencia_str)
+                    page.wait_for_timeout(200)
+                except Exception:
+                    pass
+                if mapping.get("_popup_guardar"):
+                    for sel in mapping["_popup_guardar"]:
+                        try:
+                            page.locator(sel).first.click(timeout=3000)
+                            break
+                        except Exception:
+                            continue
+                else:
+                    page.get_by_role("button", name=re.compile(r"GUARDAR", re.I)).first.click(timeout=3000)
+                page.wait_for_timeout(500)
+                page.get_by_role("button", name=re.compile(r"CERRAR", re.I)).first.click(timeout=3000)
+                LOG.info("ISR Ingresos: Ingresos a disminuir popup filled (diff=%.2f), closed", diferencia)
+                page.wait_for_timeout(500)
+            else:
+                LOG.warning("ISR Ingresos: could not click Ingresos a disminuir CAPTURAR")
+        except Exception as e:
+            LOG.warning("ISR Ingresos: Ingresos a disminuir CAPTURAR/popup failed: %s", e)
+    page.wait_for_timeout(300)
+    # 5. ¿Tienes ingresos adicionales? — if Excel > SAT (difference > 1) → Sí + CAPTURAR popup with "Ingresos no considerados en el prellenado" and Importe = difference
+    diferencia_adicionales = (excel_total_cobrados or 0.0) - (sat_total_cobrados or 0.0)
+    need_ingresos_adicionales = diferencia_adicionales > 1
+    si_no_adicionales_lbl = "Sí" if need_ingresos_adicionales else "No"
+    if _fill_select_next_to_label(scope, page, "¿Tienes ingresos adicionales", si_no_adicionales_lbl, mapping=None, initial_dropdown_key=None):
+        LOG.info("ISR Ingresos: ingresos adicionales = %s (SAT=%.2f Excel=%.2f diff=%.2f)", si_no_adicionales_lbl, sat_total_cobrados, excel_total_cobrados, diferencia_adicionales)
     else:
         LOG.warning("ISR Ingresos: could not set ingresos adicionales dropdown")
+    page.wait_for_timeout(300)
+    if need_ingresos_adicionales:
+        # *Ingresos adicionales appears: CAPTURAR → popup AGREGAR → Concepto "Ingresos no considerados en el prellenado" → Importe = difference → GUARDAR → CERRAR
+        try:
+            capturar_clicked = _click_capturar_next_to_label(page, "Ingresos adicionales")
+            if capturar_clicked:
+                page.wait_for_timeout(1500)
+                try:
+                    page.get_by_role("button", name=re.compile(r"AGREGAR", re.I)).first.click(timeout=3000)
+                    page.wait_for_timeout(500)
+                except Exception:
+                    pass
+                diferencia_adic_str = f"{diferencia_adicionales:,.2f}".replace(",", "")
+                try:
+                    concepto_dd = page.get_by_label(re.compile(r"Concepto", re.I)).first
+                    concepto_dd.wait_for(state="visible", timeout=4000)
+                    concepto_dd.select_option(label=re.compile(r"Ingresos no considerados en el prellenado", re.I))
+                    page.wait_for_timeout(200)
+                except Exception:
+                    try:
+                        page.locator("select").first.select_option(label=re.compile(r"no considerados en el prellenado", re.I))
+                        page.wait_for_timeout(200)
+                    except Exception:
+                        pass
+                try:
+                    importe_inp = page.get_by_label(re.compile(r"Importe", re.I)).first
+                    importe_inp.wait_for(state="visible", timeout=2000)
+                    importe_inp.fill(diferencia_adic_str)
+                    page.wait_for_timeout(200)
+                except Exception:
+                    pass
+                if mapping.get("_popup_guardar"):
+                    for sel in mapping["_popup_guardar"]:
+                        try:
+                            page.locator(sel).first.click(timeout=3000)
+                            break
+                        except Exception:
+                            continue
+                else:
+                    page.get_by_role("button", name=re.compile(r"GUARDAR", re.I)).first.click(timeout=3000)
+                page.wait_for_timeout(500)
+                page.get_by_role("button", name=re.compile(r"CERRAR", re.I)).first.click(timeout=3000)
+                LOG.info("ISR Ingresos: Ingresos adicionales popup filled (diff=%.2f), closed", diferencia_adicionales)
+                page.wait_for_timeout(500)
+            else:
+                LOG.warning("ISR Ingresos: could not click Ingresos adicionales CAPTURAR")
+        except Exception as e:
+            LOG.warning("ISR Ingresos: Ingresos adicionales CAPTURAR/popup failed: %s", e)
     page.wait_for_timeout(300)
     # 6. Total de ingresos percibidos por la actividad: press CAPTURAR → popup → AGREGAR → Concepto → Importe → GUARDAR → CERRAR
     try:
@@ -1453,6 +1945,7 @@ def run(
             raise ValueError("Test full run requires --workbook")
         LOG.info("Test full run: e.firma from config (no DB); initial form from Excel; then phase 3 (SIGUIENTE, CERRAR, ISR simplificado, fill ISR); no IVA/send")
         data = read_impuestos(workbook_path)
+        data["workbook_path"] = workbook_path
         label_map = data["label_map"]
         LOG.info("Period: %s-%s, periodicidad: %s", data.get("year"), data.get("month"), data.get("periodicidad"))
         efirma = get_efirma_from_config(config)
@@ -1512,6 +2005,7 @@ def run(
             raise ValueError("Test phase 3 requires --workbook")
         LOG.info("Test phase 3: Phase 1 (login) + Phase 2 (initial form) + Phase 3 (select ISR simplificado, fill ISR section); e.firma from config, data from Excel; no IVA/send")
         data = read_impuestos(workbook_path)
+        data["workbook_path"] = workbook_path
         label_map = data["label_map"]
         LOG.info("Period: %s-%s, periodicidad: %s", data.get("year"), data.get("month"), data.get("periodicidad"))
         efirma = get_efirma_from_config(config)
@@ -1571,6 +2065,7 @@ def run(
         raise ValueError("Normal run requires --workbook, --company-id, --branch-id")
     LOG.info("Reading workbook: %s", workbook_path)
     data = read_impuestos(workbook_path)
+    data["workbook_path"] = workbook_path
     label_map = data["label_map"]
     LOG.info("Period: %s-%s, labels read: %d", data.get("year"), data.get("month"), len(label_map))
 
