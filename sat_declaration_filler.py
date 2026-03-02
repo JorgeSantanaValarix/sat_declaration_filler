@@ -44,7 +44,7 @@ PHASE3_LOADING_MAX_WAIT_SEC = 90
 PHASE3_POPUP_WAIT_FOR_CERRAR_SEC = 45   # wait for CERRAR button to appear (pop-up can take several seconds)
 PHASE3_POPUP_CERRAR_CLICK_MS = 5000    # timeout when clicking CERRAR once it's visible
 PHASE3_POPUP_CERRAR_SELECTOR_MS = 4000  # per mapping selector (fail fast)
-PHASE3_SECTION_GAP_MS = 1000  # 1s between ISR Ingresos sections (was 20–60ms; reduces perceived lag)
+PHASE3_SECTION_GAP_MS = 100  # 1s between ISR Ingresos sections (was 20–60ms; reduces perceived lag)
 SP_GET_EFIRMA = "[GET_AUTOMATICTAXDECLARATION_CUSTOMERDATA]"
 LOG = logging.getLogger("sat_declaration_filler")
 
@@ -706,20 +706,49 @@ def dismiss_draft_if_present(page: Page, mapping: dict) -> bool:
     """If 'Formulario no concluido' is shown (saved draft), click trash icon and confirm 'Sí' to delete; then we can continue to initial form. Returns True if a draft was dismissed."""
     LOG.info("Checking for draft declaration (Formulario no concluido) after Presentar declaración, before filling initial form...")
     page.wait_for_timeout(DRAFT_INITIAL_WAIT_MS)
-    draft_markers = ("formulario no concluido", "formularios no enviados")
+    # Broader markers: SAT may show "Formulario no concluido", "Formularios no enviados", "borrador", "sin enviar", etc.
+    draft_markers = (
+        "formulario no concluido",
+        "formularios no enviados",
+        "formularios no concluidos",
+        "declaraciones no enviadas",
+        "no concluido",
+        "no enviados",
+        "borrador",
+        "sin enviar",
+    )
     t_end = (time.perf_counter() * 1000) + DRAFT_PAGE_WAIT_MS
     draft_found = False
+    last_body_snippet = ""
     while (time.perf_counter() * 1000) < t_end:
         try:
             body = (page.locator("body").inner_text(timeout=DRAFT_BODY_TIMEOUT_MS) or "").lower()
             if any(m in body for m in draft_markers):
                 draft_found = True
                 break
+            last_body_snippet = (body[:500] + "..." if len(body) > 500 else body) or "(empty)"
+            # If content is in an iframe, check main content iframe(s) as well
+            for frame in page.frames:
+                if frame == page.main_frame:
+                    continue
+                try:
+                    iframe_body = (frame.locator("body").inner_text(timeout=DRAFT_BODY_TIMEOUT_MS) or "").lower()
+                    if any(m in iframe_body for m in draft_markers):
+                        draft_found = True
+                        break
+                    if len(iframe_body) > len(body):
+                        last_body_snippet = (iframe_body[:500] + "..." if len(iframe_body) > 500 else iframe_body) or "(empty)"
+                except Exception:
+                    pass
+            if draft_found:
+                break
         except Exception:
             pass
         page.wait_for_timeout(DRAFT_POLL_MS)
     if not draft_found:
         LOG.info("No draft declaration detected; proceeding to configuration form.")
+        if last_body_snippet and LOG.isEnabledFor(logging.DEBUG):
+            LOG.debug("Draft check: page text snippet (first 500 chars): %s", last_body_snippet[:500])
         return False
     LOG.info("Formulario no concluido detected; dismissing saved draft (trash → Sí)")
     try:
@@ -1327,7 +1356,8 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
     - ¿Tienes ingresos a disminuir? → if (SAT Total - Excel Total) > 1 then Sí + CAPTURAR popup (AGREGAR → Concepto → Importe → GUARDAR → CERRAR); else No
     - ¿Tienes ingresos adicionales? → if (Excel - SAT) > 1 then Sí + CAPTURAR popup; else No
     - Total percibidos CAPTURAR popup.
-    Phase 4 (after Ingresos completed): GUARDAR → Determinación tab → VER DETALLE (ISR retenido por personas morales) → popup fill "ISR retenido no acreditable" from Excel (label "ISR retenido") → CERRAR → GUARDAR."""
+    Phase 4 (after Ingresos completed): GUARDAR → Determinación tab → VER DETALLE (ISR retenido por personas morales) → popup fill "ISR retenido no acreditable" from Excel (label "ISR retenido") → CERRAR → GUARDAR.
+    Phase 5 (after Phase 4): Pago tab → *¿Tienes compensaciones por aplicar? → No, *¿Tienes estímulos por aplicar? → No → GUARDAR → wait for load."""
     LOG.info("Filling ISR Ingresos form...")
     label_map = data.get("label_map") or {}
     # Always "No" per requirements for *¿Los ingresos fueron obtenidos a través de copropiedad?
@@ -2370,6 +2400,261 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
     except Exception as e:
         LOG.warning("Phase 4 (Determinación / ISR retenido VER DETALLE) failed: %s", e)
 
+    # Phase 5: Pago tab → *¿Tienes compensaciones por aplicar? → No, *¿Tienes estímulos por aplicar? → No → GUARDAR → wait for load
+    LOG.info("")
+    LOG.info("===== Phase 5: Pago (Pago tab → compensaciones/estímulos → No → GUARDAR) =====")
+    try:
+        page.wait_for_timeout(400)
+        LOG.info("Phase 5: clicking Pago tab (to the right of Determinación)")
+        pago_clicked = False
+
+        def _try_click_pago_tab(elem, *, force: bool = False) -> bool:
+            try:
+                elem.wait_for(state="visible", timeout=2000)
+                elem.scroll_into_view_if_needed(timeout=2000)
+                if force:
+                    elem.click(force=True, timeout=3000)
+                else:
+                    elem.click(timeout=3000)
+                page.wait_for_timeout(600)
+                if page.get_by_text(re.compile(r"¿Tienes compensaciones por aplicar\?", re.I)).first.is_visible(timeout=1500):
+                    return True
+                if page.get_by_text(re.compile(r"compensaciones por aplicar", re.I)).first.is_visible(timeout=1500):
+                    return True
+                if page.get_by_text(re.compile(r"¿Tienes estímulos por aplicar\?", re.I)).first.is_visible(timeout=800):
+                    return True
+                return False
+            except Exception:
+                return False
+
+        tab_loc = page.get_by_role("tab", name=re.compile(r"Pago", re.I))
+        if tab_loc.count() > 0 and _try_click_pago_tab(tab_loc.first):
+            pago_clicked = True
+            LOG.info("Phase 5: Pago tab clicked (role=tab)")
+        if not pago_clicked:
+            for container in page.locator("[role='tablist'], .nav-tabs, ul.tabs, .tabs, [class*='tab']").all():
+                try:
+                    if not container.is_visible():
+                        continue
+                    elem = container.get_by_text("Pago", exact=True).first
+                    if elem.count() > 0 and _try_click_pago_tab(elem):
+                        pago_clicked = True
+                        LOG.info("Phase 5: Pago tab clicked (inside tablist)")
+                        break
+                except Exception:
+                    continue
+        if not pago_clicked:
+            for elem in page.get_by_text("Pago", exact=True).all():
+                try:
+                    if not elem.is_visible():
+                        continue
+                    if elem.locator("xpath=ancestor::*[contains(@class,'modal') or @role='dialog']").count() > 0:
+                        continue
+                    if _try_click_pago_tab(elem):
+                        pago_clicked = True
+                        LOG.info("Phase 5: Pago tab clicked")
+                        break
+                except Exception:
+                    continue
+        if not pago_clicked:
+            for elem in page.locator("a, button, [role='tab'], li, span").filter(has_text=re.compile(r"^Pago$", re.I)).all():
+                try:
+                    if not elem.is_visible():
+                        continue
+                    if elem.locator("xpath=ancestor::*[contains(@class,'modal') or @role='dialog']").count() > 0:
+                        continue
+                    if _try_click_pago_tab(elem):
+                        pago_clicked = True
+                        LOG.info("Phase 5: Pago tab clicked (fallback)")
+                        break
+                except Exception:
+                    continue
+        if not pago_clicked:
+            for elem in page.get_by_text("Pago", exact=True).all():
+                try:
+                    if not elem.is_visible():
+                        continue
+                    if elem.locator("xpath=ancestor::*[contains(@class,'modal') or @role='dialog']").count() > 0:
+                        continue
+                    elem.scroll_into_view_if_needed(timeout=2000)
+                    elem.click(force=True, timeout=3000)
+                    page.wait_for_timeout(1000)
+                    if page.get_by_text(re.compile(r"compensaciones por aplicar", re.I)).first.is_visible(timeout=2000):
+                        pago_clicked = True
+                        LOG.info("Phase 5: Pago tab clicked (force)")
+                        break
+                except Exception:
+                    continue
+        if not pago_clicked:
+            raise RuntimeError("Could not click Pago tab (visible tab not found or section did not load)")
+        page.wait_for_timeout(800)
+        LOG.info("Phase 5: Pago tab clicked, waiting for section to load")
+        page.wait_for_load_state("domcontentloaded", timeout=5000)
+        page.wait_for_timeout(500)
+        LOG.info("Phase 5: Pago section loaded; next: dropdowns *¿Tienes compensaciones por aplicar? and *¿Tienes estímulos por aplicar? → No")
+
+        LOG.info("Phase 5: selecting *¿Tienes compensaciones por aplicar? → No")
+        comp_ok = _fill_select_next_to_label(scope, page, "¿Tienes compensaciones por aplicar", "No", mapping=None, initial_dropdown_key=None)
+        if not comp_ok:
+            comp_ok = _fill_pago_custom_dropdown(page, "compensaciones por aplicar", "No")
+        if comp_ok:
+            LOG.info("Phase 5: dropdown *¿Tienes compensaciones por aplicar? set to No")
+        else:
+            LOG.warning("Phase 5: could not set *¿Tienes compensaciones por aplicar? to No")
+        page.wait_for_timeout(200)
+        LOG.info("Phase 5: selecting *¿Tienes estímulos por aplicar? → No")
+        estim_ok = _fill_select_next_to_label(scope, page, "¿Tienes estímulos por aplicar", "No", mapping=None, initial_dropdown_key=None)
+        if not estim_ok:
+            estim_ok = _fill_pago_custom_dropdown(page, "estímulos por aplicar", "No")
+        if estim_ok:
+            LOG.info("Phase 5: dropdown *¿Tienes estímulos por aplicar? set to No")
+        else:
+            LOG.warning("Phase 5: could not set *¿Tienes estímulos por aplicar? to No")
+        page.wait_for_timeout(200)
+
+        LOG.info("Phase 5: clicking GUARDAR")
+        guardar_pago_clicked = False
+        for loc in [
+            page.get_by_role("button", name=re.compile(r"GUARDAR", re.I)),
+            page.locator("input[type='submit'][value*='GUARDAR'], input[type='button'][value*='GUARDAR']"),
+            page.get_by_text("GUARDAR", exact=True),
+        ]:
+            try:
+                first_btn = loc.first
+                first_btn.wait_for(state="visible", timeout=6000)
+                if first_btn.get_attribute("disabled"):
+                    continue
+                first_btn.click(timeout=4000)
+                guardar_pago_clicked = True
+                break
+            except Exception:
+                continue
+        if guardar_pago_clicked:
+            page.wait_for_timeout(1500)
+            LOG.info("Phase 5: GUARDAR clicked, waiting for load")
+            page.wait_for_load_state("domcontentloaded", timeout=5000)
+            page.wait_for_timeout(500)
+            LOG.info("Phase 5: load complete after GUARDAR")
+        LOG.info("Phase 5: Pago completed")
+    except Exception as e:
+        LOG.warning("Phase 5 (Pago tab / compensaciones / estímulos / GUARDAR) failed: %s", e)
+
+
+def _fill_pago_custom_dropdown(page: Page, label_substring: str, option_text: str) -> bool:
+    """Handle Pago section dropdowns: try native <select> after label, then custom trigger (combobox / 'Selecciona') + click option. Returns True if option was set/clicked."""
+    try:
+        # 1) get_by_label: control may be associated by label text or aria-label
+        try:
+            control = page.get_by_label(re.compile(re.escape(label_substring), re.I)).first
+            control.wait_for(state="visible", timeout=1200)
+            tag = control.evaluate("el => el.tagName")
+            if tag and str(tag).upper() == "SELECT":
+                control.select_option(label=option_text, timeout=2000)
+                LOG.info("Phase 5: set dropdown (get_by_label + select_option) for %r → %s", label_substring, option_text)
+                return True
+            control.click(timeout=1500)
+            page.wait_for_timeout(350)
+            page.get_by_role("option", name=re.compile(re.escape(option_text), re.I)).first.click(timeout=1500)
+            return True
+        except Exception:
+            pass
+
+        label_el = None
+        for el in page.get_by_text(re.compile(re.escape(label_substring), re.I)).all():
+            try:
+                if el.is_visible():
+                    if el.locator("xpath=ancestor::*[contains(@class,'modal') or @role='dialog']").count() > 0:
+                        continue
+                    label_el = el
+                    break
+            except Exception:
+                continue
+        if label_el is None:
+            return False
+        label_el.scroll_into_view_if_needed(timeout=1500)
+        page.wait_for_timeout(100)
+
+        # 2) First <select> that follows the label in DOM (same row or next cell)
+        for xpath_select in [
+            "xpath=following::select[1]",
+            "xpath=ancestor::tr[1]//select",
+            "xpath=((ancestor::td | ancestor::th)[1])/following-sibling::*//select",
+        ]:
+            try:
+                sel = label_el.locator(xpath_select).first
+                sel.wait_for(state="visible", timeout=600)
+                sel.select_option(label=option_text, timeout=2000)
+                LOG.info("Phase 5: set dropdown (select after label) for %r → %s", label_substring, option_text)
+                return True
+            except Exception:
+                continue
+
+        # 3) Custom dropdown: find trigger (combobox, 'Selecciona' box, or immediate next sibling)
+        trigger = None
+        for xpath in [
+            "xpath=ancestor::tr[1]//*[@role='combobox']",
+            "xpath=ancestor::tr[1]//*[contains(@class,'select') or contains(@class,'dropdown')]",
+            "xpath=((ancestor::td | ancestor::th)[1])/following-sibling::*[1]",
+            "xpath=((ancestor::td | ancestor::th)[1])/following-sibling::*[1]//*[@role='combobox']",
+            "xpath=((ancestor::td | ancestor::th)[1])/following-sibling::*[1]//*[contains(., 'Selecciona')]",
+            "xpath=ancestor::tr[1]//*[contains(., 'Selecciona')]",
+            "xpath=following-sibling::*[1]",
+            "xpath=following-sibling::*[1]//*[@role='combobox']",
+            "xpath=following-sibling::*[1]//*[contains(., 'Selecciona')]",
+            "xpath=..//*[@role='combobox']",
+            "xpath=..//*[contains(., 'Selecciona')]",
+        ]:
+            try:
+                loc = label_el.locator(xpath)
+                if loc.count() == 0:
+                    continue
+                for i in range(loc.count()):
+                    el = loc.nth(i)
+                    if el.is_visible():
+                        trigger = el
+                        break
+                if trigger is not None:
+                    break
+            except Exception:
+                continue
+        if trigger is None:
+            return False
+        trigger.click(timeout=2000)
+        page.wait_for_timeout(350)
+        option_clicked = False
+        # Prefer option inside listbox (opened dropdown) to avoid clicking another "No" on the page
+        for listbox_selector in ["[role='listbox']", "[role='menu']", ".dropdown-menu", "[class*='listbox']", "[class*='dropdown']"]:
+            try:
+                listbox = page.locator(listbox_selector).first
+                listbox.wait_for(state="visible", timeout=800)
+                opt = listbox.get_by_role("option", name=re.compile(re.escape(option_text), re.I)).first
+                opt.wait_for(state="visible", timeout=800)
+                opt.click(timeout=1500)
+                option_clicked = True
+                break
+            except Exception:
+                continue
+        if not option_clicked:
+            for opt_loc in [
+                page.get_by_role("option", name=re.compile(re.escape(option_text), re.I)),
+                page.get_by_text(option_text, exact=True),
+                page.locator("[role='option']").filter(has_text=re.compile(re.escape(option_text), re.I)),
+                page.locator("li, div[role='option'], [class*='option']").filter(has_text=re.compile(r"^" + re.escape(option_text) + r"$", re.I)),
+            ]:
+                try:
+                    first_opt = opt_loc.first
+                    first_opt.wait_for(state="visible", timeout=1500)
+                    first_opt.click(timeout=1500)
+                    option_clicked = True
+                    break
+                except Exception:
+                    continue
+        page.wait_for_timeout(150)
+        return option_clicked
+    except Exception as e:
+        LOG.debug("Phase 5 custom dropdown (%s → %s) failed: %s", label_substring, option_text, e)
+        return False
+
 
 def logout_sat(page: Page, mapping: dict) -> None:
     """Click 'Cerrar' (next to Inicio) in the SAT nav bar to log out. Safe to call if not logged in or element missing."""
@@ -2764,7 +3049,7 @@ def run(
     Full flow: read Excel → get e.firma → login SAT → navigate → fill initial → fill ISR → fill IVA → check totals → send.
     If test_login=True: only open SAT and perform e.firma login (no DB; use test_* in config). Returns True if login succeeded.
     If test_initial_form=True: login then fill Declaración Provisional initial form (no Excel; use test_year, test_month, test_periodicidad in config).
-    If test_full=True: login + fill initial form + phase 3 (ISR Ingresos) + phase 4 (Determinación, ISR retenido VER DETALLE). e.firma and data from config/Excel. No IVA/send.
+    If test_full=True: login + fill initial form + phase 3 (ISR Ingresos) + phase 4 (Determinación, ISR retenido VER DETALLE) + phase 5 (Pago: compensaciones/estímulos → No, GUARDAR). e.firma and data from config/Excel. No IVA/send.
     If test_phase3=True: login + fill initial form + select ISR simplificado de confianza + fill ISR section (Ingresos, etc.). Stops after ISR fill; no IVA/send. Requires --workbook.
     Returns True if declaration was sent (or test step OK), False otherwise. Logs and prints outcome.
     """
@@ -2884,7 +3169,7 @@ def run(
     if test_full:
         if not workbook_path:
             raise ValueError("Test full run requires --workbook")
-        LOG.info("Test full run: e.firma from config (no DB); initial form from Excel; then phase 3 (ISR Ingresos) + phase 4 (Determinación, ISR retenido); no IVA/send")
+        LOG.info("Test full run: e.firma from config (no DB); initial form from Excel; then phase 3 (ISR Ingresos) + phase 4 (Determinación, ISR retenido) + phase 5 (Pago); no IVA/send")
         data = read_impuestos(workbook_path)
         data["workbook_path"] = workbook_path
         label_map = data["label_map"]
@@ -2898,6 +3183,7 @@ def run(
             "Total ISR retenido del periodo",
             "ISR a cargo",
         ]
+        run_success = False
         for attempt in range(2):
             try:
                 with sync_playwright() as p:
@@ -2926,8 +3212,9 @@ def run(
                         page.wait_for_timeout(500)
                         fill_isr_ingresos_form(page, mapping, data)
                         fill_obligation_section(page, mapping, label_map, isr_labels)
-                        LOG.info("Test full run: initial form + phase 3 (ISR Ingresos) + phase 4 (Determinación) complete. Browser will stay open 10s for inspection.")
+                        LOG.info("Test full run: initial form + phase 3 (ISR Ingresos) + phase 4 (Determinación) + phase 5 (Pago) complete. Browser will stay open 10s for inspection.")
                         page.wait_for_timeout(10000)
+                        run_success = True
                         return True
                     finally:
                         _run_context = None
@@ -2945,6 +3232,9 @@ def run(
                             browser.close()
                         except Exception as e:
                             LOG.debug("Browser close: %s", e)
+                        # Force process exit so script does not hang (Playwright may leave driver/threads alive)
+                        LOG.info("Test full run: closing browser done; exiting process.")
+                        os._exit(0 if run_success else 1)
             except Exception as e:
                 LOG.exception("Test full run failed")
                 print(str(e), file=sys.stderr)
@@ -3140,7 +3430,7 @@ def main() -> None:
     parser.add_argument("--mapping", help="Path to form_field_mapping.json (default: script dir)")
     parser.add_argument("--test-login", action="store_true", help="Test only: open SAT and log in with local .cer/.key and password from config (no DB)")
     parser.add_argument("--test-initial-form", action="store_true", help="Test phase 2: login then fill Declaración Provisional initial form (no Excel; use test_year, test_month, test_periodicidad in config)")
-    parser.add_argument("--test-full", action="store_true", help="Test full: login + initial form + phase 3 (ISR Ingresos) + phase 4 (Determinación, ISR retenido VER DETALLE); e.firma from config, data from Excel (--workbook); no IVA/send")
+    parser.add_argument("--test-full", action="store_true", help="Test full: login + initial form + phase 3 (ISR Ingresos) + phase 4 (Determinación, ISR retenido VER DETALLE) + phase 5 (Pago); e.firma from config, data from Excel (--workbook); no IVA/send")
     parser.add_argument("--test-phase3", action="store_true", help="Test phase 3: login, initial form, select ISR simplificado de confianza, fill ISR section (Ingresos etc.); requires --workbook; stops before IVA/send")
     args = parser.parse_args()
 
