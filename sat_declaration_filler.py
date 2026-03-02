@@ -1216,6 +1216,62 @@ def _click_capturar_ingresos_a_disminuir(page: Page, scope: Page | Frame) -> boo
     return False
 
 
+def _click_capturar_ingresos_adicionales(page: Page, scope: Page | Frame) -> bool:
+    """Click the CAPTURAR for '*Ingresos adicionales' only (the CAPTURAR to the right of the '*Ingresos adicionales' label).
+    Order: dropdown ¿Tienes ingresos adicionales? = Sí → *Ingresos adicionales CAPTURAR → popup AGREGAR → Concepto → Importe → GUARDAR → CERRAR."""
+    try:
+        scope.locator("#tab457maincontainer1").first.wait_for(state="attached", timeout=500)
+        tab_scope = scope.locator("#tab457maincontainer1").first
+    except Exception:
+        tab_scope = scope
+
+    # Strategy 1: label "*Ingresos adicionales" → its row → CAPTURAR in that row
+    try:
+        loc = tab_scope.get_by_text(re.compile(r"\*?\s*Ingresos adicionales", re.I))
+        if loc.count() > 0:
+            for idx in range(loc.count()):
+                try:
+                    label_el = loc.nth(idx)
+                    label_el.wait_for(state="visible", timeout=500)
+                    row = label_el.locator("xpath=ancestor::tr[1] | ancestor::div[contains(@class,'row')][1]").first
+                    if row.count() == 0:
+                        continue
+                    cap = row.locator("a, button").filter(has_text=re.compile(r"CAPTURAR", re.I)).first
+                    cap.wait_for(state="visible", timeout=800)
+                    try:
+                        cap.scroll_into_view_if_needed(timeout=400)
+                    except Exception:
+                        pass
+                    cap.click()
+                    return True
+                except Exception:
+                    continue
+    except Exception:
+        pass
+
+    # Strategy 2: of all CAPTURARs in tab, click the one whose row contains "Ingresos adicionales" but not the question row "¿Tienes ingresos adicionales"
+    try:
+        for cap in tab_scope.locator("a, button").filter(has_text=re.compile(r"CAPTURAR", re.I)).all():
+            try:
+                row = cap.locator("xpath=ancestor::tr[1] | ancestor::div[contains(@class,'row')][1]").first
+                if row.count() == 0:
+                    continue
+                row_text = row.inner_text(timeout=500) or ""
+                if "Ingresos adicionales" in row_text and "¿Tienes ingresos adicionales" not in row_text:
+                    cap.scroll_into_view_if_needed(timeout=500)
+                    cap.click()
+                    return True
+            except Exception:
+                continue
+    except Exception:
+        pass
+
+    # Strategy 3: fallback to generic label-based helper on tab scope
+    if _click_capturar_next_to_label(tab_scope, "Ingresos adicionales", occurrence=0):
+        return True
+    return False
+
+
 def _click_capturar_total_percibidos(page: Page, scope: Page | Frame) -> bool:
     """Click the CAPTURAR to the right of 'Total de ingresos percibidos por la actividad' only (the third CAPTURAR; do not click Ingresos a disminuir CAPTURAR)."""
     try:
@@ -1799,48 +1855,139 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
         LOG.warning("Phase 3: could not set ingresos adicionales dropdown")
     page.wait_for_timeout(100)
     if need_ingresos_adicionales:
-        # *Ingresos adicionales appears: CAPTURAR → popup AGREGAR → Concepto "Ingresos no considerados en el prellenado" → Importe = difference → GUARDAR → CERRAR
+        # *Ingresos adicionales appears: CAPTURAR → popup AGREGAR → Concepto "Ingresos no considerados en el prellenado" → Importe = difference (int) → GUARDAR → CERRAR
         try:
-            capturar_clicked = _click_capturar_next_to_label(page, "Ingresos adicionales")
+            # Prefer specialized helper that targets the CAPTURAR to the right of "*Ingresos adicionales"
+            capturar_clicked = _click_capturar_ingresos_adicionales(page, scope)
+            if not capturar_clicked:
+                capturar_clicked = _click_capturar_next_to_label(scope, "Ingresos adicionales")
             if capturar_clicked:
+                LOG.info("Phase 3: Ingresos adicionales CAPTURAR pressed")
                 page.wait_for_timeout(80)
-                try:
-                    page.get_by_role("button", name=re.compile(r"AGREGAR", re.I)).first.click(timeout=600)
-                    page.wait_for_timeout(50)
-                except Exception:
-                    pass
-                diferencia_adic_str = f"{diferencia_adicionales:,.2f}".replace(",", "")
-                try:
-                    concepto_dd = page.get_by_label(re.compile(r"Concepto", re.I)).first
-                    concepto_dd.wait_for(state="visible", timeout=500)
-                    concepto_dd.select_option(label=re.compile(r"Ingresos no considerados en el prellenado", re.I), timeout=2000)
-                    page.wait_for_timeout(50)
-                except Exception:
+                # Importe = difference with no decimals (e.g. 100.00 → 100)
+                diferencia_adic_val = int(round(diferencia_adicionales))
+                diferencia_adic_str = str(diferencia_adic_val)
+                # Scope to the "Ingresos adicionales" popup: modal has title + Concepto + Importe + GUARDAR
+                dialog = None
+                for use_last, dialog_loc, to_ms in [
+                    (False, page.get_by_role("dialog"), 800),
+                    (False, page.locator("[role='dialog']"), 500),
+                    (True, page.locator("div").filter(has_text=re.compile(r"Ingresos adicionales", re.I)).filter(has_text="Concepto").filter(has_text="Importe").filter(has_text="GUARDAR"), 400),
+                    (True, page.locator("div").filter(has_text=re.compile(r"Ingresos adicionales", re.I)).filter(has=page.locator("select")), 350),
+                ]:
                     try:
-                        page.locator("select").first.select_option(label=re.compile(r"no considerados en el prellenado", re.I), timeout=2000)
+                        d = dialog_loc.last if use_last else dialog_loc.first
+                        d.wait_for(state="visible", timeout=to_ms)
+                        dialog = d
+                        break
+                    except Exception:
+                        continue
+                if dialog is None:
+                    dialog = page
+                # Click AGREGAR inside the popup so Concepto/Importe row is ready
+                if dialog != page:
+                    try:
+                        dialog.get_by_role("button", name=re.compile(r"AGREGAR", re.I)).first.click(timeout=600)
                         page.wait_for_timeout(50)
                     except Exception:
                         pass
+                else:
+                    try:
+                        page.get_by_role("button", name=re.compile(r"AGREGAR", re.I)).first.click(timeout=600)
+                        page.wait_for_timeout(50)
+                    except Exception:
+                        pass
+                # Concepto: fixed option "Ingresos no considerados en el prellenado"
+                # Reuse the generic helper that finds the select next to the "Concepto" label inside this dialog.
+                concepto_ok = _fill_select_next_to_label(
+                    dialog,
+                    page,
+                    "Concepto",
+                    "Ingresos no considerados en el prellenado",
+                    mapping=None,
+                    initial_dropdown_key=None,
+                )
+                # Importe: same row as Concepto dropdown (form row), then GUARDAR → CERRAR
+                importe_ok = False
                 try:
-                    importe_inp = page.get_by_label(re.compile(r"Importe", re.I)).first
-                    importe_inp.wait_for(state="visible", timeout=400)
-                    importe_inp.fill(diferencia_adic_str)
-                    page.wait_for_timeout(80)
-                except Exception:
-                    pass
-                if mapping.get("_popup_guardar"):
-                    for sel in mapping["_popup_guardar"]:
+                    sel_first = dialog.locator("select").first
+                    sel_first.wait_for(state="visible", timeout=200)
+                    for row_xpath in ["xpath=ancestor::tr[1]", "xpath=ancestor::*[.//input][1]"]:
                         try:
-                            page.locator(sel).first.click(timeout=1500)
+                            row = sel_first.locator(row_xpath)
+                            if row.count() == 0:
+                                continue
+                            inp = row.locator("input[type='text'], input[type='number'], input:not([type])").first
+                            inp.wait_for(state="visible", timeout=180)
+                            if inp.get_attribute("disabled") or inp.get_attribute("readonly"):
+                                continue
+                            inp.click()
+                            inp.fill(diferencia_adic_str)
+                            importe_ok = True
+                            page.wait_for_timeout(25)
                             break
                         except Exception:
                             continue
+                except Exception:
+                    pass
+                if not importe_ok:
+                    try:
+                        label_importe = dialog.get_by_text("Importe", exact=False).first
+                        label_importe.wait_for(state="visible", timeout=300)
+                        for xpath in [
+                            "xpath=((ancestor::td | ancestor::th)[1])/following-sibling::*//input[not(@disabled)]",
+                            "xpath=((ancestor::td | ancestor::th)[1])/following-sibling::*//input",
+                            "xpath=(ancestor::tr[1])//input[not(@disabled)]",
+                            "xpath=(ancestor::tr[1])//input",
+                            "xpath=following-sibling::*//input",
+                        ]:
+                            try:
+                                importe_inp = label_importe.locator(xpath).first
+                                importe_inp.wait_for(state="visible", timeout=180)
+                                if importe_inp.get_attribute("disabled") or importe_inp.get_attribute("readonly"):
+                                    continue
+                                importe_inp.click()
+                                importe_inp.fill(diferencia_adic_str)
+                                importe_ok = True
+                                page.wait_for_timeout(25)
+                                break
+                            except Exception:
+                                continue
+                    except Exception:
+                        pass
+                if not importe_ok:
+                    try:
+                        for inp in dialog.locator("input[type='text'], input[type='number'], input:not([type])").all():
+                            try:
+                                if inp.get_attribute("disabled") or inp.get_attribute("readonly"):
+                                    continue
+                                inp.wait_for(state="visible", timeout=120)
+                                inp.fill(diferencia_adic_str)
+                                importe_ok = True
+                                break
+                            except Exception:
+                                continue
+                    except Exception:
+                        pass
+                if concepto_ok and importe_ok:
+                    try:
+                        btn_scope = dialog if dialog != page else page
+                        btn_scope.get_by_role("button", name=re.compile(r"GUARDAR", re.I)).first.click(timeout=1500)
+                        page.wait_for_timeout(150)
+                        try:
+                            confirm_btn = page.get_by_role("button", name=re.compile(r"ACEPTAR", re.I)).first
+                            confirm_btn.wait_for(state="visible", timeout=800)
+                            confirm_btn.click()
+                            page.wait_for_timeout(80)
+                        except Exception:
+                            pass
+                        btn_scope.get_by_role("button", name=re.compile(r"CERRAR", re.I)).first.click(timeout=1500)
+                        LOG.info("Phase 3: Ingresos adicionales popup filled (diff=%.2f), closed", diferencia_adicionales)
+                        page.wait_for_timeout(150)
+                    except Exception as e_btn:
+                        LOG.warning("Phase 3: Ingresos adicionales GUARDAR/CERRAR: %s", e_btn)
                 else:
-                    page.get_by_role("button", name=re.compile(r"GUARDAR", re.I)).first.click(timeout=1500)
-                page.wait_for_timeout(150)
-                page.get_by_role("button", name=re.compile(r"CERRAR", re.I)).first.click(timeout=1500)
-                LOG.info("Phase 3: Ingresos adicionales popup filled (diff=%.2f), closed", diferencia_adicionales)
-                page.wait_for_timeout(150)
+                    LOG.warning("Phase 3: Ingresos adicionales popup not filled (concepto=%s, importe=%s); not clicking GUARDAR", concepto_ok, importe_ok)
             else:
                 LOG.warning("Phase 3: could not click Ingresos adicionales CAPTURAR")
         except Exception as e:
