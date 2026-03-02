@@ -946,7 +946,7 @@ def _read_sat_total_ingresos_cobrados(page: Page, scope: Page, mapping: dict | N
                 raw = el.get_attribute("value") or el.input_value() or el.inner_text()
                 parsed = _parse_currency(raw)
                 if parsed != 0.0 or (raw and re.search(r"[\d,]", str(raw))):
-                    LOG.info("[Phase3 DEBUG] SAT value: section=%r (mapping %r), raw=%r, parsed=%.2f", sat_label, sel, raw, parsed)
+                    LOG.info("Phase 3: SAT value: section=%r (mapping %r), raw=%r, parsed=%.2f", sat_label, sel, raw, parsed)
                     return parsed
             except Exception:
                 continue
@@ -985,7 +985,7 @@ def _read_sat_total_ingresos_cobrados(page: Page, scope: Page, mapping: dict | N
                     raw = inp.get_attribute("value") or inp.input_value() or inp.inner_text()
                     parsed = _parse_currency(raw)
                     if parsed != 0.0 or (raw and re.search(r"[\d,]", str(raw))):
-                        LOG.info("[Phase3 DEBUG] SAT value: section=%r (label for=), raw=%r, parsed=%.2f", sat_label, raw, parsed)
+                        LOG.info("Phase 3: SAT value: section=%r (label for=), raw=%r, parsed=%.2f", sat_label, raw, parsed)
                         return parsed
         except Exception:
             pass
@@ -998,7 +998,7 @@ def _read_sat_total_ingresos_cobrados(page: Page, scope: Page, mapping: dict | N
                     raw = following_input.first.get_attribute("value") or following_input.first.input_value() or following_input.first.inner_text()
                     parsed = _parse_currency(raw)
                     if parsed > 0 or (raw and re.search(r"[\d,]", str(raw))):
-                        LOG.info("[Phase3 DEBUG] SAT value: section=%r (following::input[%s]), raw=%r, parsed=%.2f", sat_label, input_index, raw, parsed)
+                        LOG.info("Phase 3: SAT value: section=%r (following::input[%s]), raw=%r, parsed=%.2f", sat_label, input_index, raw, parsed)
                         return parsed
             except Exception:
                 continue
@@ -1014,7 +1014,7 @@ def _read_sat_total_ingresos_cobrados(page: Page, scope: Page, mapping: dict | N
                     raw = m.group(0)
                     parsed = _parse_currency(raw)
                     if parsed > 0 or re.search(r"[\d]", raw):
-                        LOG.info("[Phase3 DEBUG] SAT value: section=%r (from row text), raw=%r, parsed=%.2f", sat_label, raw, parsed)
+                        LOG.info("Phase 3: SAT value: section=%r (from row text), raw=%r, parsed=%.2f", sat_label, raw, parsed)
                         return parsed
             except Exception:
                 break
@@ -1031,7 +1031,7 @@ def _read_sat_total_ingresos_cobrados(page: Page, scope: Page, mapping: dict | N
                 raw = inp.get_attribute("value") or inp.inner_text()
                 parsed = _parse_currency(raw)
                 if parsed != 0.0 or (raw and re.search(r"[\d,]", str(raw))):
-                    LOG.info("[Phase3 DEBUG] SAT value: section=%r, raw=%r, parsed=%.2f", sat_label, raw, parsed)
+                    LOG.info("Phase 3: SAT value: section=%r, raw=%r, parsed=%.2f", sat_label, raw, parsed)
                     return parsed
             except Exception:
                 continue
@@ -1046,7 +1046,7 @@ def _read_sat_total_ingresos_cobrados(page: Page, scope: Page, mapping: dict | N
                 raw = val_el.inner_text()
                 parsed = _parse_currency(raw)
                 if parsed != 0.0 or re.search(r"[\d,]", str(raw)):
-                    LOG.info("[Phase3 DEBUG] SAT value: section=%r (sibling), raw=%r, parsed=%.2f", sat_label, raw, parsed)
+                    LOG.info("Phase 3: SAT value: section=%r (sibling), raw=%r, parsed=%.2f", sat_label, raw, parsed)
                     return parsed
             except Exception:
                 continue
@@ -1063,7 +1063,7 @@ def _read_sat_total_ingresos_cobrados(page: Page, scope: Page, mapping: dict | N
                         raw = control.inner_text() or ""
                 raw = raw or control.inner_text()
                 parsed = _parse_currency(raw)
-                LOG.info("[Phase3 DEBUG] SAT value: section=%r (get_by_label), raw=%r, parsed=%.2f", sat_label, raw, parsed)
+                LOG.info("Phase 3: SAT value: section=%r (get_by_label), raw=%r, parsed=%.2f", sat_label, raw, parsed)
                 return parsed
             except Exception:
                 continue
@@ -1076,7 +1076,7 @@ def _read_sat_total_ingresos_cobrados(page: Page, scope: Page, mapping: dict | N
                     raw = inp.get_attribute("value") or inp.input_value() or ""
                     parsed = _parse_currency(raw)
                     if parsed > 0 and re.search(r"[\d,]", str(raw)):
-                        LOG.info("[Phase3 DEBUG] SAT value: section=%r (tab input), raw=%r, parsed=%.2f", sat_label, raw, parsed)
+                        LOG.info("Phase 3: SAT value: section=%r (tab input), raw=%r, parsed=%.2f", sat_label, raw, parsed)
                         return parsed
                 except Exception:
                     continue
@@ -1093,16 +1093,16 @@ def _read_sat_total_ingresos_cobrados(page: Page, scope: Page, mapping: dict | N
                         raw = node.get_attribute("value") or node.inner_text()
                         parsed = _parse_currency(raw)
                         if parsed > 0 and re.search(r"[\d,]", str(raw)):
-                            LOG.info("[Phase3 DEBUG] SAT value: section=%r (container), raw=%r, parsed=%.2f", sat_label, raw, parsed)
+                            LOG.info("Phase 3: SAT value: section=%r (container), raw=%r, parsed=%.2f", sat_label, raw, parsed)
                             return parsed
                     except Exception:
                         continue
         except Exception:
             pass
-        LOG.warning("[Phase3 DEBUG] SAT value: %r not found in form (all strategies failed); using 0.0 for comparison", sat_label)
+        LOG.warning("Phase 3: SAT value: %r not found in form (all strategies failed); using 0.0 for comparison", sat_label)
         return 0.0
     except Exception as e:
-        LOG.info("[Phase3 DEBUG] SAT value: section=%r — could not read (returning 0.0): %s", sat_label, e)
+        LOG.info("Phase 3: SAT value: section=%r — could not read (returning 0.0): %s", sat_label, e)
         return 0.0
 
 
@@ -1358,7 +1358,7 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
     - Total percibidos CAPTURAR popup.
     Phase 4 (after Ingresos completed): GUARDAR → Determinación tab → VER DETALLE (ISR retenido por personas morales) → popup fill "ISR retenido no acreditable" from Excel (label "ISR retenido") → CERRAR → GUARDAR.
     Phase 5 (after Phase 4): Pago tab → *¿Tienes compensaciones por aplicar? → No, *¿Tienes estímulos por aplicar? → No → GUARDAR → wait for load."""
-    LOG.info("Filling ISR Ingresos form...")
+    LOG.info("Phase 3: Filling Ingresos form...")
     label_map = data.get("label_map") or {}
     # Always "No" per requirements for *¿Los ingresos fueron obtenidos a través de copropiedad?
     copropiedad = "No"
@@ -1384,12 +1384,12 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
     excel_total_cobrados = _parse_currency(excel_total_cobrados_raw)
     workbook_path = data.get("workbook_path") or "(workbook path not set)"
     LOG.info(
-        "[Phase3 DEBUG] Excel: workbook=%s | Sheet=Impuestos (layout: D/E or E/F). "
+        "Phase 3: Excel: workbook=%s | Sheet=Impuestos (layout: D/E or E/F). "
         "Row used: label=%r, value=%s → parsed=%.2f",
         workbook_path, used_key, excel_total_cobrados_raw, excel_total_cobrados,
     )
     LOG.info(
-        "[Phase3 DEBUG] Excel values found: %r=%s, %r=%s, %r=%s, %r=%s",
+        "Phase 3: Excel values found: %r=%s, %r=%s, %r=%s, %r=%s",
         excel_label_1, _v1, excel_label_2, _v2, excel_label_3, _v3, excel_label_4, _v4,
     )
     importe_total = _v1 if _v1 is not None else (_v2 if _v2 is not None else (_v3 if _v3 is not None else _v4))
@@ -1404,7 +1404,7 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
 
     page.wait_for_timeout(300)
     LOG.info("")
-    LOG.info("===== ISR Ingresos: sección 1 - ¿Los ingresos fueron obtenidos a través de copropiedad? =====")
+    LOG.info("===== Phase 3: sección 1 - ¿Los ingresos fueron obtenidos a través de copropiedad? =====")
     # Wait for Ingresos form by label text (minimal wait for 5–10s total Phase 3)
     scope = _get_isr_ingresos_scope(page)
     try:
@@ -1413,7 +1413,7 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
         try:
             scope.get_by_text("ingresos fueron obtenidos", exact=False).first.wait_for(state="visible", timeout=300)
         except Exception:
-            LOG.warning("ISR Ingresos form (label 'copropiedad') not visible")
+            LOG.warning("Phase 3: label 'copropiedad' not visible")
     # 1. ¿Los ingresos fueron obtenidos a través de copropiedad? — use unique label (avoid matching "integrantes por copropiedad" in Descuentos)
     _si = copropiedad.strip().lower() in ("sí", "si", "yes")
     si_no_label = "Sí" if _si else "No"
@@ -1421,13 +1421,13 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
     if not copropiedad_ok:
         copropiedad_ok = _set_dropdown_by_label_scope(scope, page, "ingresos fueron obtenidos a través de copropiedad", si_no_label, timeout_ms=1500)
     if copropiedad_ok:
-        LOG.info("ISR Ingresos: copropiedad = %s (dropdown)", si_no_label)
+        LOG.info("Phase 3: copropiedad = %s (dropdown)", si_no_label)
     else:
-        LOG.warning("ISR Ingresos: could not set copropiedad dropdown")
+        LOG.warning("Phase 3: could not set copropiedad dropdown")
     page.wait_for_timeout(PHASE3_SECTION_GAP_MS)
     # 2. Total de ingresos efectivamente cobrados — no need to fill or do anything (prefilled, skip)
     LOG.info("")
-    LOG.info("===== ISR Ingresos: sección 3 - Descuentos, devoluciones y bonificaciones =====")
+    LOG.info("===== Phase 3: sección 3 - Descuentos, devoluciones y bonificaciones =====")
     # 3. Descuentos, devoluciones y bonificaciones: press CAPTURAR → popup: add "0" on *Descuentos, devoluciones y bonificaciones de integrantes por copropiedad → CERRAR
     try:
         capturar_clicked = _try_click(page, mapping, "_isr_ingresos_capturar_descuentos")
@@ -1441,7 +1441,7 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
             filled = False
             try:
                 page.get_by_text("Devoluciones, descuentos y bonificaciones facturadas", exact=False).first.wait_for(state="visible", timeout=200)
-                LOG.info("ISR Ingresos: Descuentos popup (Devoluciones, descuentos y bonificaciones facturadas) visible")
+                LOG.info("Phase 3: Descuentos popup (Devoluciones, descuentos y bonificaciones facturadas) visible")
             except Exception:
                 pass
             page.wait_for_timeout(150)
@@ -1488,7 +1488,7 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
                             inp.clear()
                             inp.fill(descuentos_value)
                             filled = True
-                            LOG.info("ISR Ingresos: Descuentos popup filled (label=%r, xpath)", label_pattern)
+                            LOG.info("Phase 3: Descuentos popup filled (label=%r, xpath)", label_pattern)
                             break
                         except Exception:
                             continue
@@ -1507,7 +1507,7 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
                                 inp.clear()
                                 inp.fill(descuentos_value)
                                 filled = True
-                                LOG.info("ISR Ingresos: Descuentos popup filled (following::input[%s])", input_index)
+                                LOG.info("Phase 3: Descuentos popup filled (following::input[%s])", input_index)
                                 break
                         except Exception:
                             continue
@@ -1541,37 +1541,37 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
                                     inp.clear()
                                     inp.fill(descuentos_value)
                                     filled = True
-                                    LOG.info("ISR Ingresos: Descuentos popup filled (modal_inputs by row text)")
+                                    LOG.info("Phase 3: Descuentos popup filled (modal_inputs by row text)")
                                     break
                         except Exception:
                             continue
                 except Exception:
                     pass
             if not filled:
-                LOG.warning("ISR Ingresos: could not find Descuentos popup textbox (*Descuentos...integrantes por copropiedad)")
+                LOG.warning("Phase 3: could not find Descuentos popup textbox (*Descuentos...integrantes por copropiedad)")
             page.wait_for_timeout(100)
             page.get_by_role("button", name=re.compile(r"CERRAR", re.I)).first.click(timeout=400)
-            LOG.info("ISR Ingresos: Descuentos popup filled and closed")
+            LOG.info("Phase 3: Descuentos popup filled and closed")
         else:
-            LOG.warning("ISR Ingresos: could not click Descuentos CAPTURAR link")
+            LOG.warning("Phase 3: could not click Descuentos CAPTURAR link")
         page.wait_for_timeout(PHASE3_SECTION_GAP_MS)
     except Exception as e:
-        LOG.warning("ISR Ingresos: Descuentos CAPTURAR/popup failed: %s", e)
+        LOG.warning("Phase 3: Descuentos CAPTURAR/popup failed: %s", e)
     LOG.info("")
-    LOG.info("===== ISR Ingresos: sección 4 - ¿Tienes ingresos a disminuir? / *Ingresos a disminuir =====")
+    LOG.info("===== Phase 3: sección 4 - ¿Tienes ingresos a disminuir? / *Ingresos a disminuir =====")
     # 4. ¿Tienes ingresos a disminuir? — compare SAT "Total de ingresos efectivamente cobrados" vs Excel (Total de ingresos acumulados); if SAT - Excel > 1 → Sí + CAPTURAR popup
     sat_total_cobrados = _read_sat_total_ingresos_cobrados(page, scope, mapping)
     sat_total_cobrados = float(sat_total_cobrados) if sat_total_cobrados is not None else 0.0
     excel_total_cobrados = float(excel_total_cobrados) if excel_total_cobrados is not None else 0.0
-    LOG.info("[Phase3 DEBUG] Comparison for *¿Tienes ingresos a disminuir? / *¿Tienes ingresos adicionales?: SAT=%.2f, Excel=%.2f", sat_total_cobrados, excel_total_cobrados)
+    LOG.info("Phase 3: Comparison for *¿Tienes ingresos a disminuir? / *¿Tienes ingresos adicionales?: SAT=%.2f, Excel=%.2f", sat_total_cobrados, excel_total_cobrados)
     diferencia = sat_total_cobrados - excel_total_cobrados
     need_ingresos_a_disminuir = diferencia > 1
     si_no_disminuir_lbl = "Sí" if need_ingresos_a_disminuir else "No"
     page.wait_for_timeout(200)
     if _fill_select_next_to_label(scope, page, "ingresos a disminuir", si_no_disminuir_lbl, mapping=None, initial_dropdown_key=None):
-        LOG.info("ISR Ingresos: ingresos a disminuir = %s (SAT=%.2f Excel=%.2f diff=%.2f)", si_no_disminuir_lbl, sat_total_cobrados, excel_total_cobrados, diferencia)
+        LOG.info("Phase 3: ingresos a disminuir = %s (SAT=%.2f Excel=%.2f diff=%.2f)", si_no_disminuir_lbl, sat_total_cobrados, excel_total_cobrados, diferencia)
     else:
-        LOG.warning("ISR Ingresos: could not set ingresos a disminuir dropdown")
+        LOG.warning("Phase 3: could not set ingresos a disminuir dropdown")
     page.wait_for_timeout(200)
     if need_ingresos_a_disminuir:
         # *Ingresos a disminuir (section below dropdown) appears: wait for it, then CAPTURAR → popup AGREGAR → Concepto → Importe (int, no decimals) → GUARDAR → CERRAR
@@ -1589,13 +1589,13 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
         try:
             capturar_clicked = _click_capturar_ingresos_a_disminuir(page, scope)
             if capturar_clicked:
-                LOG.info("ISR Ingresos: Ingresos a disminuir CAPTURAR pressed")
+                LOG.info("Phase 3: Ingresos a disminuir CAPTURAR pressed")
                 page.wait_for_timeout(150)
                 try:
                     page.get_by_role("button", name=re.compile(r"AGREGAR", re.I)).first.click(timeout=800)
                     page.wait_for_timeout(80)
                 except Exception as e_ag:
-                    LOG.warning("ISR Ingresos: could not click AGREGAR in Ingresos a disminuir popup: %s", e_ag)
+                    LOG.warning("Phase 3: could not click AGREGAR in Ingresos a disminuir popup: %s", e_ag)
                 # Importe = difference with no decimals (e.g. 8178.81 → 8178)
                 importe_val = int(round(diferencia))
                 importe_str = str(importe_val)
@@ -1669,9 +1669,9 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
                             except Exception:
                                 continue
                     except Exception as e_c:
-                        LOG.warning("ISR Ingresos: Concepto in popup: %s", e_c)
+                        LOG.warning("Phase 3: Concepto in popup: %s", e_c)
                 if concepto_ok:
-                    LOG.info("ISR Ingresos: Ingresos a disminuir popup: selected *Concepto (Ingresos facturados pendientes de cancelación con aceptación del receptor)")
+                    LOG.info("Phase 3: Ingresos a disminuir popup: selected *Concepto (Ingresos facturados pendientes de cancelación con aceptación del receptor)")
                 # Importe: same row as Concepto dropdown (form row), then GUARDAR → CERRAR
                 importe_ok = False
                 # Strategy A: input in the same row as the Concepto select we just used (most reliable)
@@ -1720,7 +1720,7 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
                             except Exception:
                                 continue
                     except Exception as e_i:
-                        LOG.warning("ISR Ingresos: Importe in popup: %s", e_i)
+                        LOG.warning("Phase 3: Importe in popup: %s", e_i)
                 if not importe_ok:
                     try:
                         for inp in dialog.locator("input[type='text'], input[type='number'], input:not([type])").all():
@@ -1736,46 +1736,46 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
                     except Exception:
                         pass
                 if importe_ok:
-                    LOG.info("ISR Ingresos: Ingresos a disminuir popup: filled Importe=%s", importe_str)
+                    LOG.info("Phase 3: Ingresos a disminuir popup: filled Importe=%s", importe_str)
                 if concepto_ok and importe_ok:
                     try:
                         btn_scope = dialog if dialog != page else page
-                        print(f"{_debug_ts()} [Phase3 DEBUG] Ingresos a disminuir popup flags: concepto_ok={concepto_ok}, importe_ok={importe_ok}, importe_str={importe_str}")
-                        print(f"{_debug_ts()} [Phase3 DEBUG] Ingresos a disminuir: clicking GUARDAR")
+                        print(f"{_debug_ts()} Phase 3: Ingresos a disminuir popup flags: concepto_ok={concepto_ok}, importe_ok={importe_ok}, importe_str={importe_str}")
+                        print(f"{_debug_ts()} Phase 3: Ingresos a disminuir: clicking GUARDAR")
                         btn_scope.get_by_role("button", name=re.compile(r"GUARDAR", re.I)).first.click(timeout=800)
                         page.wait_for_timeout(80)
                         # Small confirmation popup ("Captura la información requerida") with ACEPTAR button
                         try:
                             confirm_btn = page.get_by_role("button", name=re.compile(r"ACEPTAR", re.I)).first
                             confirm_btn.wait_for(state="visible", timeout=800)
-                            print(f"{_debug_ts()} [Phase3 DEBUG] Ingresos a disminuir: clicking ACEPTAR")
+                            print(f"{_debug_ts()} Phase 3: Ingresos a disminuir: clicking ACEPTAR")
                             confirm_btn.click()
                             page.wait_for_timeout(100)
                         except Exception:
                             pass
-                        print(f"{_debug_ts()} [Phase3 DEBUG] Ingresos a disminuir: clicking CERRAR")
+                        print(f"{_debug_ts()} Phase 3: Ingresos a disminuir: clicking CERRAR")
                         btn_scope.get_by_role("button", name=re.compile(r"CERRAR", re.I)).first.click(timeout=800)
-                        LOG.info("ISR Ingresos: Ingresos a disminuir popup filled (importe=%s), closed", importe_str)
+                        LOG.info("Phase 3: Ingresos a disminuir popup filled (importe=%s), closed", importe_str)
                         page.wait_for_timeout(80)
                     except Exception as e_btn:
-                        LOG.warning("ISR Ingresos: GUARDAR/CERRAR in Ingresos a disminuir popup: %s", e_btn)
+                        LOG.warning("Phase 3: GUARDAR/CERRAR in Ingresos a disminuir popup: %s", e_btn)
                 else:
-                    LOG.warning("ISR Ingresos: Ingresos a disminuir popup not filled (concepto=%s, importe=%s); not clicking GUARDAR", concepto_ok, importe_ok)
+                    LOG.warning("Phase 3: Ingresos a disminuir popup not filled (concepto=%s, importe=%s); not clicking GUARDAR", concepto_ok, importe_ok)
             else:
-                LOG.warning("ISR Ingresos: could not click Ingresos a disminuir CAPTURAR")
+                LOG.warning("Phase 3: could not click Ingresos a disminuir CAPTURAR")
         except Exception as e:
-            LOG.warning("ISR Ingresos: Ingresos a disminuir CAPTURAR/popup failed: %s", e)
+            LOG.warning("Phase 3: Ingresos a disminuir CAPTURAR/popup failed: %s", e)
     page.wait_for_timeout(PHASE3_SECTION_GAP_MS)
     LOG.info("")
-    LOG.info("===== ISR Ingresos: sección 5 - ¿Tienes ingresos adicionales? =====")
+    LOG.info("===== Phase 3: sección 5 - ¿Tienes ingresos adicionales? =====")
     # 5. ¿Tienes ingresos adicionales? — if Excel > SAT (difference > 1) → Sí + CAPTURAR popup with "Ingresos no considerados en el prellenado" and Importe = difference
     diferencia_adicionales = (excel_total_cobrados or 0.0) - (sat_total_cobrados or 0.0)
     need_ingresos_adicionales = diferencia_adicionales > 1
     si_no_adicionales_lbl = "Sí" if need_ingresos_adicionales else "No"
     if _fill_select_next_to_label(scope, page, "¿Tienes ingresos adicionales", si_no_adicionales_lbl, mapping=None, initial_dropdown_key=None):
-        LOG.info("ISR Ingresos: ingresos adicionales = %s (SAT=%.2f Excel=%.2f diff=%.2f)", si_no_adicionales_lbl, sat_total_cobrados, excel_total_cobrados, diferencia_adicionales)
+        LOG.info("Phase 3: ingresos adicionales = %s (SAT=%.2f Excel=%.2f diff=%.2f)", si_no_adicionales_lbl, sat_total_cobrados, excel_total_cobrados, diferencia_adicionales)
     else:
-        LOG.warning("ISR Ingresos: could not set ingresos adicionales dropdown")
+        LOG.warning("Phase 3: could not set ingresos adicionales dropdown")
     page.wait_for_timeout(200)
     if need_ingresos_adicionales:
         # *Ingresos adicionales appears: CAPTURAR → popup AGREGAR → Concepto "Ingresos no considerados en el prellenado" → Importe = difference → GUARDAR → CERRAR
@@ -1818,17 +1818,17 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
                     page.get_by_role("button", name=re.compile(r"GUARDAR", re.I)).first.click(timeout=1500)
                 page.wait_for_timeout(150)
                 page.get_by_role("button", name=re.compile(r"CERRAR", re.I)).first.click(timeout=1500)
-                LOG.info("ISR Ingresos: Ingresos adicionales popup filled (diff=%.2f), closed", diferencia_adicionales)
+                LOG.info("Phase 3: Ingresos adicionales popup filled (diff=%.2f), closed", diferencia_adicionales)
                 page.wait_for_timeout(150)
             else:
-                LOG.warning("ISR Ingresos: could not click Ingresos adicionales CAPTURAR")
+                LOG.warning("Phase 3: could not click Ingresos adicionales CAPTURAR")
         except Exception as e:
-            LOG.warning("ISR Ingresos: Ingresos adicionales CAPTURAR/popup failed: %s", e)
+            LOG.warning("Phase 3: Ingresos adicionales CAPTURAR/popup failed: %s", e)
         page.wait_for_timeout(PHASE3_SECTION_GAP_MS)
     else:
         page.wait_for_timeout(PHASE3_SECTION_GAP_MS)
     LOG.info("")
-    LOG.info("===== ISR Ingresos: sección 6 - Total de ingresos percibidos por la actividad =====")
+    LOG.info("===== Phase 3: sección 6 - Total de ingresos percibidos por la actividad =====")
     # 6. Total de ingresos percibidos por la actividad: press CAPTURAR → popup "Total de ingresos efectivamente cobrados" → for each Excel row (Actividad empresarial, Actividad profesional, Uso o goce temporal) with value != "-": AGREGAR → Concepto → Importe → GUARDAR → ACEPTAR → then CERRAR
     try:
         capturar_clicked = _try_click(page, mapping, "_isr_ingresos_capturar_total")
@@ -1840,7 +1840,7 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
             capturar_clicked = _click_capturar_next_to_label(scope, "Total de ingresos percibidos")
         if not capturar_clicked:
             raise RuntimeError("Could not click Total percibidos CAPTURAR link")
-        LOG.info("ISR Ingresos: Total percibidos CAPTURAR pressed")
+        LOG.info("Phase 3: Total percibidos CAPTURAR pressed")
         page.wait_for_timeout(200)
         # Resolve "Total de ingresos efectivamente cobrados" popup dialog
         dialog = None
@@ -1876,13 +1876,13 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
             if abs(parsed) < 0.005:
                 continue
             importe_str = str(int(round(parsed)))
-            LOG.info("ISR Ingresos: Total percibidos adding entry: excel_label=%r, sat_concepto=%r, importe=%s", excel_label, sat_concepto, importe_str)
+            LOG.info("Phase 3: Total percibidos adding entry: excel_label=%r, sat_concepto=%r, importe=%s", excel_label, sat_concepto, importe_str)
             try:
                 if dialog != page:
                     dialog.get_by_role("button", name=re.compile(r"AGREGAR", re.I)).first.click(timeout=800)
                     page.wait_for_timeout(50)
             except Exception as e_ag:
-                LOG.warning("ISR Ingresos: Total percibidos AGREGAR for %r: %s", excel_label, e_ag)
+                LOG.warning("Phase 3: Total percibidos AGREGAR for %r: %s", excel_label, e_ag)
                 continue
             concepto_ok = False
             try:
@@ -1917,10 +1917,10 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
                     concepto_ok = True
                     page.wait_for_timeout(40)
                 except Exception as e_c:
-                    LOG.warning("ISR Ingresos: Total percibidos Concepto %r: %s", sat_concepto, e_c)
+                    LOG.warning("Phase 3: Total percibidos Concepto %r: %s", sat_concepto, e_c)
             if concepto_ok:
                 LOG.info(
-                    "ISR Ingresos: Total percibidos popup: selected Concepto=%r for excel_label=%r",
+                    "Phase 3: Total percibidos popup: selected Concepto=%r for excel_label=%r",
                     sat_concepto,
                     excel_label,
                 )
@@ -1971,7 +1971,7 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
                     pass
             if importe_ok:
                 LOG.info(
-                    "ISR Ingresos: Total percibidos popup: filled Importe=%s for excel_label=%r",
+                    "Phase 3: Total percibidos popup: filled Importe=%s for excel_label=%r",
                     importe_str,
                     excel_label,
                 )
@@ -1988,20 +1988,20 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
                     except Exception:
                         pass
                 except Exception as e_btn:
-                    LOG.warning("ISR Ingresos: Total percibidos GUARDAR/ACEPTAR for %r: %s", excel_label, e_btn)
+                    LOG.warning("Phase 3: Total percibidos GUARDAR/ACEPTAR for %r: %s", excel_label, e_btn)
             else:
-                LOG.warning("ISR Ingresos: Total percibidos entry not filled (concepto=%s, importe=%s) for %r", concepto_ok, importe_ok, excel_label)
+                LOG.warning("Phase 3: Total percibidos entry not filled (concepto=%s, importe=%s) for %r", concepto_ok, importe_ok, excel_label)
         # Close the popup
         try:
             btn_scope = dialog if dialog != page else page
             btn_scope.get_by_role("button", name=re.compile(r"CERRAR", re.I)).first.click(timeout=800)
-            LOG.info("ISR Ingresos: Total percibidos popup filled and closed")
+            LOG.info("Phase 3: Total percibidos popup filled and closed")
         except Exception as e_close:
-            LOG.warning("ISR Ingresos: Total percibidos CERRAR: %s", e_close)
+            LOG.warning("Phase 3: Total percibidos CERRAR: %s", e_close)
         page.wait_for_timeout(50)
     except Exception as e:
-        LOG.warning("ISR Ingresos: Total percibidos CAPTURAR/popup failed: %s", e)
-    LOG.info("ISR Ingresos form fill completed")
+        LOG.warning("Phase 3: Total percibidos CAPTURAR/popup failed: %s", e)
+    LOG.info("Phase 3: Ingresos form fill completed")
 
     # Phase 4: GUARDAR → Determinación tab (to the right of Ingresos) → VER DETALLE (ISR retenido por personas morales) → popup fill "ISR retenido no acreditable" → CERRAR → GUARDAR
     LOG.info("")
