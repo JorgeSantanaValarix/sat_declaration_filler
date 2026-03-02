@@ -44,6 +44,7 @@ PHASE3_LOADING_MAX_WAIT_SEC = 90
 PHASE3_POPUP_WAIT_FOR_CERRAR_SEC = 45   # wait for CERRAR button to appear (pop-up can take several seconds)
 PHASE3_POPUP_CERRAR_CLICK_MS = 5000    # timeout when clicking CERRAR once it's visible
 PHASE3_POPUP_CERRAR_SELECTOR_MS = 4000  # per mapping selector (fail fast)
+PHASE3_SECTION_GAP_MS = 1000  # 1s between ISR Ingresos sections (was 20–60ms; reduces perceived lag)
 SP_GET_EFIRMA = "[GET_AUTOMATICTAXDECLARATION_CUSTOMERDATA]"
 LOG = logging.getLogger("sat_declaration_filler")
 
@@ -1371,7 +1372,7 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
         importe_str = str(importe_total)
     concepto_label = data.get("isr_ingresos_concepto") or "Actividad empresarial"
 
-    page.wait_for_timeout(60)
+    page.wait_for_timeout(300)
     LOG.info("")
     LOG.info("===== ISR Ingresos: sección 1 - ¿Los ingresos fueron obtenidos a través de copropiedad? =====")
     # Wait for Ingresos form by label text (minimal wait for 5–10s total Phase 3)
@@ -1393,7 +1394,7 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
         LOG.info("ISR Ingresos: copropiedad = %s (dropdown)", si_no_label)
     else:
         LOG.warning("ISR Ingresos: could not set copropiedad dropdown")
-    page.wait_for_timeout(20)
+    page.wait_for_timeout(PHASE3_SECTION_GAP_MS)
     # 2. Total de ingresos efectivamente cobrados — no need to fill or do anything (prefilled, skip)
     LOG.info("")
     LOG.info("===== ISR Ingresos: sección 3 - Descuentos, devoluciones y bonificaciones =====")
@@ -1405,15 +1406,15 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
         if not capturar_clicked:
             capturar_clicked = _click_capturar_next_to_label(scope, "Descuentos")
         if capturar_clicked:
-            page.wait_for_timeout(30)
+            page.wait_for_timeout(150)
             descuentos_value = str(descuentos_copropiedad)
             filled = False
             try:
-                page.get_by_text("Devoluciones, descuentos y bonificaciones facturadas", exact=False).first.wait_for(state="visible", timeout=150)
+                page.get_by_text("Devoluciones, descuentos y bonificaciones facturadas", exact=False).first.wait_for(state="visible", timeout=200)
                 LOG.info("ISR Ingresos: Descuentos popup (Devoluciones, descuentos y bonificaciones facturadas) visible")
             except Exception:
                 pass
-            page.wait_for_timeout(10)
+            page.wait_for_timeout(150)
             dialog = None
             for try_dialog in [
                 lambda: page.get_by_role("dialog").first,
@@ -1422,51 +1423,70 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
             ]:
                 try:
                     d = try_dialog()
-                    d.wait_for(state="visible", timeout=80)
+                    d.wait_for(state="visible", timeout=250)
                     dialog = d
                     break
                 except Exception:
                     continue
             if dialog is None:
                 dialog = page
-            # Fast path: input in same row as label "integrantes por copropiedad"
-            try:
-                label_el = dialog.get_by_text(re.compile(r"integrantes por copropiedad", re.I)).first
-                label_el.wait_for(state="visible", timeout=150)
-                for xpath in [
-                    "xpath=((ancestor::td | ancestor::th)[1])/following-sibling::*//input",
-                    "xpath=(ancestor::tr[1])//input",
-                    "xpath=following-sibling::*//input",
-                    "xpath=..//input",
-                ]:
-                    try:
-                        inp = label_el.locator(xpath).first
-                        inp.wait_for(state="visible", timeout=80)
-                        inp.click()
-                        inp.clear()
-                        inp.fill(descuentos_value)
-                        filled = True
+            # Try multiple label texts (SAT wording may vary); shorter timeouts for faster fail and next section
+            for label_pattern in [
+                r"integrantes por copropiedad",
+                r"Descuentos.*integrantes por copropiedad",
+                r"Descuentos.*de integrantes por copropiedad",
+                r"devoluciones.*copropiedad",
+                r"copropiedad",
+            ]:
+                if filled:
+                    break
+                try:
+                    label_el = dialog.get_by_text(re.compile(label_pattern, re.I)).first
+                    label_el.wait_for(state="visible", timeout=350)
+                    for xpath in [
+                        "xpath=((ancestor::td | ancestor::th)[1])/following-sibling::*//input",
+                        "xpath=(ancestor::tr[1])//input",
+                        "xpath=following-sibling::*//input",
+                        "xpath=..//input",
+                    ]:
+                        try:
+                            inp = label_el.locator(xpath).first
+                            inp.wait_for(state="visible", timeout=200)
+                            if inp.get_attribute("disabled"):
+                                continue
+                            inp.click()
+                            inp.clear()
+                            inp.fill(descuentos_value)
+                            filled = True
+                            LOG.info("ISR Ingresos: Descuentos popup filled (label=%r, xpath)", label_pattern)
+                            break
+                        except Exception:
+                            continue
+                    if filled:
                         break
-                    except Exception:
-                        continue
-            except Exception:
-                pass
+                    # following::input[n] like SAT value read elsewhere
+                    for input_index in [1, 2]:
+                        try:
+                            following_input = label_el.locator(f"xpath=following::input[{input_index}]")
+                            if following_input.count() > 0:
+                                inp = following_input.first
+                                inp.wait_for(state="visible", timeout=200)
+                                if inp.get_attribute("disabled"):
+                                    continue
+                                inp.click()
+                                inp.clear()
+                                inp.fill(descuentos_value)
+                                filled = True
+                                LOG.info("ISR Ingresos: Descuentos popup filled (following::input[%s])", input_index)
+                                break
+                        except Exception:
+                            continue
+                except Exception:
+                    continue
             if not filled:
                 try:
                     inp = dialog.get_by_label(re.compile(r"Descuentos.*integrantes por copropiedad", re.I)).first
-                    inp.wait_for(state="visible", timeout=150)
-                    inp.click()
-                    inp.clear()
-                    inp.fill(descuentos_value)
-                    filled = True
-                except Exception:
-                    pass
-            if not filled:
-                try:
-                    label_el = dialog.get_by_text(re.compile(r"Descuentos.*de integrantes por copropiedad", re.I)).first
-                    label_el.wait_for(state="visible", timeout=100)
-                    inp = label_el.locator("xpath=((ancestor::td | ancestor::th)[1])/following-sibling::*//input").first
-                    inp.wait_for(state="visible", timeout=80)
+                    inp.wait_for(state="visible", timeout=350)
                     inp.click()
                     inp.clear()
                     inp.fill(descuentos_value)
@@ -1476,32 +1496,35 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
             if not filled:
                 try:
                     modal_inputs = dialog.locator("input[type='text'], input[type='number'], input:not([type])")
-                    n = min(modal_inputs.count(), 8)
+                    n = min(modal_inputs.count(), 12)
                     for idx in range(n):
                         inp = modal_inputs.nth(idx)
                         try:
                             if inp.get_attribute("disabled"):
                                 continue
-                            inp.wait_for(state="visible", timeout=60)
+                            inp.wait_for(state="visible", timeout=200)
                             row = inp.locator("xpath=ancestor::tr[1] | ancestor::div[contains(@class,'row')][1]")
-                            if row.count() > 0 and row.first.get_by_text("integrantes por copropiedad").count() > 0:
-                                inp.click()
-                                inp.clear()
-                                inp.fill(descuentos_value)
-                                filled = True
-                                break
+                            if row.count() > 0:
+                                row_text = row.first.inner_text() or ""
+                                if re.search(r"integrantes por copropiedad|copropiedad|descuentos.*integrantes", row_text, re.I):
+                                    inp.click()
+                                    inp.clear()
+                                    inp.fill(descuentos_value)
+                                    filled = True
+                                    LOG.info("ISR Ingresos: Descuentos popup filled (modal_inputs by row text)")
+                                    break
                         except Exception:
                             continue
                 except Exception:
                     pass
             if not filled:
                 LOG.warning("ISR Ingresos: could not find Descuentos popup textbox (*Descuentos...integrantes por copropiedad)")
-            page.wait_for_timeout(15)
+            page.wait_for_timeout(100)
             page.get_by_role("button", name=re.compile(r"CERRAR", re.I)).first.click(timeout=400)
             LOG.info("ISR Ingresos: Descuentos popup filled and closed")
         else:
             LOG.warning("ISR Ingresos: could not click Descuentos CAPTURAR link")
-        page.wait_for_timeout(50)
+        page.wait_for_timeout(PHASE3_SECTION_GAP_MS)
     except Exception as e:
         LOG.warning("ISR Ingresos: Descuentos CAPTURAR/popup failed: %s", e)
     LOG.info("")
@@ -1514,15 +1537,15 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
     diferencia = sat_total_cobrados - excel_total_cobrados
     need_ingresos_a_disminuir = diferencia > 1
     si_no_disminuir_lbl = "Sí" if need_ingresos_a_disminuir else "No"
-    page.wait_for_timeout(60)
+    page.wait_for_timeout(200)
     if _fill_select_next_to_label(scope, page, "ingresos a disminuir", si_no_disminuir_lbl, mapping=None, initial_dropdown_key=None):
         LOG.info("ISR Ingresos: ingresos a disminuir = %s (SAT=%.2f Excel=%.2f diff=%.2f)", si_no_disminuir_lbl, sat_total_cobrados, excel_total_cobrados, diferencia)
     else:
         LOG.warning("ISR Ingresos: could not set ingresos a disminuir dropdown")
-    page.wait_for_timeout(60)
+    page.wait_for_timeout(200)
     if need_ingresos_a_disminuir:
         # *Ingresos a disminuir (section below dropdown) appears: wait for it, then CAPTURAR → popup AGREGAR → Concepto → Importe (int, no decimals) → GUARDAR → CERRAR
-        page.wait_for_timeout(100)
+        page.wait_for_timeout(200)
         try:
             scope.locator("#tab457maincontainer1").first.wait_for(state="attached", timeout=500)
             tab_scope = scope.locator("#tab457maincontainer1").first
@@ -1532,15 +1555,15 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
             tab_scope.get_by_text(re.compile(r"Ingresos a disminuir", re.I)).nth(1).wait_for(state="visible", timeout=800)
         except Exception:
             pass
-        page.wait_for_timeout(50)
+        page.wait_for_timeout(150)
         try:
             capturar_clicked = _click_capturar_ingresos_a_disminuir(page, scope)
             if capturar_clicked:
                 LOG.info("ISR Ingresos: Ingresos a disminuir CAPTURAR pressed")
-                page.wait_for_timeout(50)
+                page.wait_for_timeout(150)
                 try:
                     page.get_by_role("button", name=re.compile(r"AGREGAR", re.I)).first.click(timeout=800)
-                    page.wait_for_timeout(30)
+                    page.wait_for_timeout(80)
                 except Exception as e_ag:
                     LOG.warning("ISR Ingresos: could not click AGREGAR in Ingresos a disminuir popup: %s", e_ag)
                 # Importe = difference with no decimals (e.g. 8178.81 → 8178)
@@ -1567,7 +1590,7 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
                 if dialog != page:
                     try:
                         dialog.get_by_role("button", name=re.compile(r"AGREGAR", re.I)).first.click(timeout=500)
-                        page.wait_for_timeout(30)
+                        page.wait_for_timeout(80)
                     except Exception:
                         pass
                 # Option text variants (SAT may use accents)
@@ -1703,7 +1726,7 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
                         print(f"{_debug_ts()} [Phase3 DEBUG] Ingresos a disminuir: clicking CERRAR")
                         btn_scope.get_by_role("button", name=re.compile(r"CERRAR", re.I)).first.click(timeout=800)
                         LOG.info("ISR Ingresos: Ingresos a disminuir popup filled (importe=%s), closed", importe_str)
-                        page.wait_for_timeout(30)
+                        page.wait_for_timeout(80)
                     except Exception as e_btn:
                         LOG.warning("ISR Ingresos: GUARDAR/CERRAR in Ingresos a disminuir popup: %s", e_btn)
                 else:
@@ -1712,7 +1735,7 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
                 LOG.warning("ISR Ingresos: could not click Ingresos a disminuir CAPTURAR")
         except Exception as e:
             LOG.warning("ISR Ingresos: Ingresos a disminuir CAPTURAR/popup failed: %s", e)
-    page.wait_for_timeout(50)
+    page.wait_for_timeout(PHASE3_SECTION_GAP_MS)
     LOG.info("")
     LOG.info("===== ISR Ingresos: sección 5 - ¿Tienes ingresos adicionales? =====")
     # 5. ¿Tienes ingresos adicionales? — if Excel > SAT (difference > 1) → Sí + CAPTURAR popup with "Ingresos no considerados en el prellenado" and Importe = difference
@@ -1723,35 +1746,35 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
         LOG.info("ISR Ingresos: ingresos adicionales = %s (SAT=%.2f Excel=%.2f diff=%.2f)", si_no_adicionales_lbl, sat_total_cobrados, excel_total_cobrados, diferencia_adicionales)
     else:
         LOG.warning("ISR Ingresos: could not set ingresos adicionales dropdown")
-    page.wait_for_timeout(30)
+    page.wait_for_timeout(200)
     if need_ingresos_adicionales:
         # *Ingresos adicionales appears: CAPTURAR → popup AGREGAR → Concepto "Ingresos no considerados en el prellenado" → Importe = difference → GUARDAR → CERRAR
         try:
             capturar_clicked = _click_capturar_next_to_label(page, "Ingresos adicionales")
             if capturar_clicked:
-                page.wait_for_timeout(80)
+                page.wait_for_timeout(150)
                 try:
                     page.get_by_role("button", name=re.compile(r"AGREGAR", re.I)).first.click(timeout=800)
-                    page.wait_for_timeout(50)
+                    page.wait_for_timeout(80)
                 except Exception:
                     pass
                 diferencia_adic_str = f"{diferencia_adicionales:,.2f}".replace(",", "")
                 try:
                     concepto_dd = page.get_by_label(re.compile(r"Concepto", re.I)).first
-                    concepto_dd.wait_for(state="visible", timeout=1200)
+                    concepto_dd.wait_for(state="visible", timeout=800)
                     concepto_dd.select_option(label=re.compile(r"Ingresos no considerados en el prellenado", re.I), timeout=3000)
-                    page.wait_for_timeout(60)
+                    page.wait_for_timeout(80)
                 except Exception:
                     try:
                         page.locator("select").first.select_option(label=re.compile(r"no considerados en el prellenado", re.I), timeout=3000)
-                        page.wait_for_timeout(60)
+                        page.wait_for_timeout(80)
                     except Exception:
                         pass
                 try:
                     importe_inp = page.get_by_label(re.compile(r"Importe", re.I)).first
-                    importe_inp.wait_for(state="visible", timeout=600)
+                    importe_inp.wait_for(state="visible", timeout=400)
                     importe_inp.fill(diferencia_adic_str)
-                    page.wait_for_timeout(60)
+                    page.wait_for_timeout(80)
                 except Exception:
                     pass
                 if mapping.get("_popup_guardar"):
@@ -1763,15 +1786,17 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
                             continue
                 else:
                     page.get_by_role("button", name=re.compile(r"GUARDAR", re.I)).first.click(timeout=1500)
-                page.wait_for_timeout(200)
+                page.wait_for_timeout(150)
                 page.get_by_role("button", name=re.compile(r"CERRAR", re.I)).first.click(timeout=1500)
                 LOG.info("ISR Ingresos: Ingresos adicionales popup filled (diff=%.2f), closed", diferencia_adicionales)
-                page.wait_for_timeout(200)
+                page.wait_for_timeout(150)
             else:
                 LOG.warning("ISR Ingresos: could not click Ingresos adicionales CAPTURAR")
         except Exception as e:
             LOG.warning("ISR Ingresos: Ingresos adicionales CAPTURAR/popup failed: %s", e)
-        page.wait_for_timeout(50)
+        page.wait_for_timeout(PHASE3_SECTION_GAP_MS)
+    else:
+        page.wait_for_timeout(PHASE3_SECTION_GAP_MS)
     LOG.info("")
     LOG.info("===== ISR Ingresos: sección 6 - Total de ingresos percibidos por la actividad =====")
     # 6. Total de ingresos percibidos por la actividad: press CAPTURAR → popup "Total de ingresos efectivamente cobrados" → for each Excel row (Actividad empresarial, Actividad profesional, Uso o goce temporal) with value != "-": AGREGAR → Concepto → Importe → GUARDAR → ACEPTAR → then CERRAR
@@ -1786,7 +1811,7 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
         if not capturar_clicked:
             raise RuntimeError("Could not click Total percibidos CAPTURAR link")
         LOG.info("ISR Ingresos: Total percibidos CAPTURAR pressed")
-        page.wait_for_timeout(50)
+        page.wait_for_timeout(200)
         # Resolve "Total de ingresos efectivamente cobrados" popup dialog
         dialog = None
         for use_last, dialog_loc, to_ms in [
@@ -1992,30 +2017,91 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
         page.wait_for_load_state("domcontentloaded", timeout=5000)
         page.wait_for_timeout(800)
         LOG.info("Phase 4: clicking Determinación tab (to the right of Ingresos)")
-        # Avoid matching hidden modal title "Determinación de la Base gravable"; click the visible tab only
+        # Avoid matching hidden modal title "Determinación de la Base gravable"; click the visible tab in the tab bar only
         det_clicked = False
-        for elem in page.get_by_text("Determinación", exact=True).all():
+
+        def _try_click_det_tab(elem, *, force: bool = False) -> bool:
             try:
-                if elem.is_visible():
-                    elem.click(timeout=4000)
-                    det_clicked = True
-                    LOG.info("Phase 4: Determinación tab clicked")
-                    break
+                elem.wait_for(state="visible", timeout=2000)
+                elem.scroll_into_view_if_needed(timeout=2000)
+                if force:
+                    elem.click(force=True, timeout=3000)
+                else:
+                    elem.click(timeout=3000)
+                page.wait_for_timeout(600)
+                # Verify section switched: "ISR retenido por personas morales" or VER DETALLE should appear
+                if page.get_by_text(re.compile(r"ISR retenido por personas morales", re.I)).first.is_visible(timeout=1500):
+                    return True
+                if page.get_by_text("VER DETALLE", exact=False).first.is_visible(timeout=800):
+                    return True
+                return False
             except Exception:
-                continue
+                return False
+
+        # 1) Prefer role=tab (proper tab widget)
+        tab_loc = page.get_by_role("tab", name=re.compile(r"Determinación", re.I))
+        if tab_loc.count() > 0 and _try_click_det_tab(tab_loc.first):
+            det_clicked = True
+            LOG.info("Phase 4: Determinación tab clicked (role=tab)")
         if not det_clicked:
-            for elem in page.locator("a, button, [role='tab'], li").filter(has_text=re.compile(r"^Determinación$", re.I)).all():
+            # 2) Tab bar: element with "Determinación" inside tablist/tab container
+            for container in page.locator("[role='tablist'], .nav-tabs, ul.tabs, .tabs, [class*='tab']").all():
                 try:
-                    if elem.is_visible() and not elem.locator("xpath=ancestor::*[contains(@class,'modal') or @role='dialog']").count():
-                        elem.click(timeout=4000)
+                    if not container.is_visible():
+                        continue
+                    elem = container.get_by_text("Determinación", exact=True).first
+                    if elem.count() > 0 and _try_click_det_tab(elem):
+                        det_clicked = True
+                        LOG.info("Phase 4: Determinación tab clicked (inside tablist)")
+                        break
+                except Exception:
+                    continue
+        if not det_clicked:
+            for elem in page.get_by_text("Determinación", exact=True).all():
+                try:
+                    if not elem.is_visible():
+                        continue
+                    if elem.locator("xpath=ancestor::*[contains(@class,'modal') or @role='dialog']").count() > 0:
+                        continue
+                    if _try_click_det_tab(elem):
+                        det_clicked = True
+                        LOG.info("Phase 4: Determinación tab clicked")
+                        break
+                except Exception:
+                    continue
+        if not det_clicked:
+            for elem in page.locator("a, button, [role='tab'], li, span").filter(has_text=re.compile(r"^Determinación$", re.I)).all():
+                try:
+                    if not elem.is_visible():
+                        continue
+                    if elem.locator("xpath=ancestor::*[contains(@class,'modal') or @role='dialog']").count() > 0:
+                        continue
+                    if _try_click_det_tab(elem):
                         det_clicked = True
                         LOG.info("Phase 4: Determinación tab clicked (fallback)")
                         break
                 except Exception:
                     continue
         if not det_clicked:
-            raise RuntimeError("Could not click Determinación tab (visible tab not found)")
-        page.wait_for_timeout(1200)
+            # Last resort: force click first visible "Determinación" (exclude modals)
+            for elem in page.get_by_text("Determinación", exact=True).all():
+                try:
+                    if not elem.is_visible():
+                        continue
+                    if elem.locator("xpath=ancestor::*[contains(@class,'modal') or @role='dialog']").count() > 0:
+                        continue
+                    elem.scroll_into_view_if_needed(timeout=2000)
+                    elem.click(force=True, timeout=3000)
+                    page.wait_for_timeout(1000)
+                    if page.get_by_text(re.compile(r"ISR retenido por personas morales", re.I)).first.is_visible(timeout=2000):
+                        det_clicked = True
+                        LOG.info("Phase 4: Determinación tab clicked (force)")
+                        break
+                except Exception:
+                    continue
+        if not det_clicked:
+            raise RuntimeError("Could not click Determinación tab (visible tab not found or section did not load)")
+        page.wait_for_timeout(800)
         LOG.info("Phase 4: Determinación tab clicked, waiting for section to load")
         page.wait_for_load_state("domcontentloaded", timeout=5000)
         page.wait_for_timeout(500)
@@ -2099,59 +2185,152 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
             if dialog is None:
                 dialog = page
             filled = False
-            try:
-                # Same logic as Phase 3 Descuentos: label then xpaths (short timeouts), then get_by_label, then modal_inputs by row text
-                label_el = dialog.get_by_text(re.compile(r"ISR retenido no acreditable", re.I)).first
-                label_el.wait_for(state="visible", timeout=150)
-                LOG.info("Phase 4: found label 'ISR retenido no acreditable'; filling textbox to the right with value=%s from Excel", isr_retenido_str)
-                for xpath in [
-                    "xpath=((ancestor::td | ancestor::th)[1])/following-sibling::*//input",
-                    "xpath=(ancestor::tr[1])//input",
-                    "xpath=following-sibling::*//input",
-                    "xpath=..//input",
-                ]:
+
+            def _set_isr_no_acreditable_value(inp, value_str: str) -> bool:
+                """Fill input with value; SAT control may ignore .fill(), so verify and fall back to keyboard + JS."""
+                def _get_val():
                     try:
-                        inp = label_el.locator(xpath).first
-                        inp.wait_for(state="visible", timeout=80)
-                        if inp.get_attribute("disabled") or inp.get_attribute("readonly"):
-                            continue
-                        inp.click()
-                        inp.clear()
-                        inp.fill(isr_retenido_str)
-                        filled = True
-                        LOG.info("Phase 4: filled 'ISR retenido no acreditable' textbox with value=%s (from Excel)", isr_retenido_str)
-                        break
+                        return (inp.input_value() or inp.get_attribute("value") or "").strip()
                     except Exception:
-                        continue
+                        return ""
+                try:
+                    inp.scroll_into_view_if_needed(timeout=1000)
+                    inp.click()
+                    page.wait_for_timeout(150)
+                    # Try fill first
+                    inp.fill("")
+                    page.wait_for_timeout(80)
+                    inp.fill(value_str)
+                    page.wait_for_timeout(200)
+                    if _get_val() == value_str:
+                        return True
+                    # Replace via keyboard (Ctrl+A then type)
+                    inp.click()
+                    page.wait_for_timeout(80)
+                    page.keyboard.press("Control+a")
+                    page.wait_for_timeout(50)
+                    page.keyboard.type(value_str, delay=50)
+                    page.wait_for_timeout(150)
+                    if _get_val() == value_str:
+                        return True
+                    # press_sequentially on the locator
+                    inp.click()
+                    page.wait_for_timeout(80)
+                    inp.press_sequentially(value_str, delay=60)
+                    page.wait_for_timeout(150)
+                    if _get_val() == value_str:
+                        return True
+                    # Last resort: set value via JS and dispatch input/change
+                    inp.evaluate("""el => {
+                        el.value = arguments[0];
+                        el.dispatchEvent(new Event('input', { bubbles: true }));
+                        el.dispatchEvent(new Event('change', { bubbles: true }));
+                    }""", value_str)
+                    page.wait_for_timeout(100)
+                    return _get_val() == value_str
+                except Exception:
+                    return False
+
+            try:
+                # Strategy 1: Same as Descuentos popup (section 3) — label then following::input[1] and following::input[2]
+                try:
+                    label_el = dialog.get_by_text(re.compile(r"ISR retenido no acreditable", re.I)).first
+                    label_el.wait_for(state="visible", timeout=400)
+                    for input_index in [1, 2]:
+                        try:
+                            following_input = label_el.locator(f"xpath=following::input[{input_index}]")
+                            if following_input.count() > 0:
+                                inp = following_input.first
+                                inp.wait_for(state="visible", timeout=400)
+                                if inp.get_attribute("disabled"):
+                                    continue
+                                if _set_isr_no_acreditable_value(inp, isr_retenido_str):
+                                    filled = True
+                                    LOG.info("Phase 4: filled 'ISR retenido no acreditable' (following::input[%s], same as Descuentos) with value=%s", input_index, isr_retenido_str)
+                                    break
+                        except Exception:
+                            continue
+                except Exception:
+                    pass
+
+                if not filled:
+                    # Strategy 2: By position — dialog has 3 ISR inputs: (0) tipo ingreso, (1) a adicionar, (2) no acreditable
+                    try:
+                        modal_inputs = dialog.locator("input[type='text'], input[type='number'], input:not([type])")
+                        if modal_inputs.count() >= 3:
+                            inp = modal_inputs.nth(2)
+                            inp.wait_for(state="visible", timeout=500)
+                            row = inp.locator("xpath=ancestor::tr[1] | ancestor::div[contains(@class,'row')][1]")
+                            if row.count() > 0:
+                                row_text = (row.first.inner_text() or "").lower()
+                                if "no acreditable" in row_text and "a adicionar" not in row_text:
+                                    if _set_isr_no_acreditable_value(inp, isr_retenido_str):
+                                        filled = True
+                                        LOG.info("Phase 4: filled 'ISR retenido no acreditable' (3rd input, row text) with value=%s", isr_retenido_str)
+                    except Exception:
+                        pass
+
+                if not filled:
+                    # Strategy 3: Label "no acreditable" + xpaths (exclude row with "a adicionar")
+                    for label_el in dialog.get_by_text(re.compile(r"ISR retenido no acreditable", re.I)).all():
+                        try:
+                            if not label_el.is_visible():
+                                continue
+                            # Same row must contain "no acreditable" and not be the "a adicionar" row
+                            row = label_el.locator("xpath=ancestor::tr[1]")
+                            if row.count() > 0 and row.first.get_by_text(re.compile(r"a adicionar", re.I)).count() > 0:
+                                continue
+                            for xpath in [
+                                "xpath=((ancestor::td | ancestor::th)[1])/following-sibling::*//input",
+                                "xpath=(ancestor::tr[1])//input",
+                                "xpath=following-sibling::*//input",
+                                "xpath=..//input",
+                            ]:
+                                try:
+                                    inp = label_el.locator(xpath).first
+                                    if inp.count() == 0:
+                                        continue
+                                    inp.wait_for(state="visible", timeout=300)
+                                    if inp.get_attribute("disabled"):
+                                        continue
+                                    if _set_isr_no_acreditable_value(inp, isr_retenido_str):
+                                        filled = True
+                                        LOG.info("Phase 4: filled 'ISR retenido no acreditable' textbox with value=%s (from Excel)", isr_retenido_str)
+                                        break
+                                except Exception:
+                                    continue
+                            if filled:
+                                break
+                        except Exception:
+                            continue
+
                 if not filled:
                     try:
                         inp = dialog.get_by_label(re.compile(r"ISR retenido no acreditable", re.I)).first
-                        inp.wait_for(state="visible", timeout=150)
-                        inp.click()
-                        inp.clear()
-                        inp.fill(isr_retenido_str)
-                        filled = True
-                        LOG.info("Phase 4: filled 'ISR retenido no acreditable' (by label) with value=%s from Excel", isr_retenido_str)
+                        inp.wait_for(state="visible", timeout=300)
+                        if _set_isr_no_acreditable_value(inp, isr_retenido_str):
+                            filled = True
+                            LOG.info("Phase 4: filled 'ISR retenido no acreditable' (by label) with value=%s from Excel", isr_retenido_str)
                     except Exception:
                         pass
-                # Same logic as Phase 3 (Descuentos popup): find input by row text if label/xpath failed
                 if not filled:
+                    # Strategy 4: Iterate inputs, pick the one in a row with "no acreditable" and without "a adicionar"
                     try:
                         modal_inputs = dialog.locator("input[type='text'], input[type='number'], input:not([type])")
                         n = min(modal_inputs.count(), 12)
                         for idx in range(n):
                             inp = modal_inputs.nth(idx)
                             try:
-                                if inp.get_attribute("disabled"):
-                                    continue
-                                inp.wait_for(state="visible", timeout=60)
+                                inp.wait_for(state="visible", timeout=200)
                                 row = inp.locator("xpath=ancestor::tr[1] | ancestor::div[contains(@class,'row')][1]")
-                                if row.count() > 0 and row.first.get_by_text(re.compile(r"ISR retenido no acreditable", re.I)).count() > 0:
-                                    inp.click()
-                                    inp.clear()
-                                    inp.fill(isr_retenido_str)
+                                if row.count() == 0:
+                                    continue
+                                row_text = (row.first.inner_text() or "").lower()
+                                if "no acreditable" not in row_text or "a adicionar" in row_text:
+                                    continue
+                                if _set_isr_no_acreditable_value(inp, isr_retenido_str):
                                     filled = True
-                                    LOG.info("Phase 4: filled 'ISR retenido no acreditable' (by row text, same as Phase 3) with value=%s from Excel", isr_retenido_str)
+                                    LOG.info("Phase 4: filled 'ISR retenido no acreditable' (by row text) with value=%s from Excel", isr_retenido_str)
                                     break
                             except Exception:
                                 continue
