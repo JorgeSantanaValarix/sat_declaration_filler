@@ -1417,7 +1417,14 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
     # 1. ¿Los ingresos fueron obtenidos a través de copropiedad? — use unique label (avoid matching "integrantes por copropiedad" in Descuentos)
     _si = copropiedad.strip().lower() in ("sí", "si", "yes")
     si_no_label = "Sí" if _si else "No"
-    copropiedad_ok = _fill_select_next_to_label(scope, page, "ingresos fueron obtenidos a través de copropiedad", si_no_label, mapping=None, initial_dropdown_key=None)
+    copropiedad_ok = _fill_select_next_to_label(
+        scope,
+        page,
+        "ingresos fueron obtenidos a través de copropiedad",
+        si_no_label,
+        mapping=mapping,
+        initial_dropdown_key="_isr_ingresos_copropiedad",
+    )
     if not copropiedad_ok:
         copropiedad_ok = _set_dropdown_by_label_scope(scope, page, "ingresos fueron obtenidos a través de copropiedad", si_no_label, timeout_ms=1500)
     if copropiedad_ok:
@@ -1568,7 +1575,14 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
     need_ingresos_a_disminuir = diferencia > 1
     si_no_disminuir_lbl = "Sí" if need_ingresos_a_disminuir else "No"
     page.wait_for_timeout(100)
-    if _fill_select_next_to_label(scope, page, "ingresos a disminuir", si_no_disminuir_lbl, mapping=None, initial_dropdown_key=None):
+    if _fill_select_next_to_label(
+        scope,
+        page,
+        "ingresos a disminuir",
+        si_no_disminuir_lbl,
+        mapping=mapping,
+        initial_dropdown_key="_isr_ingresos_disminuir",
+    ):
         LOG.info("Phase 3: ingresos a disminuir = %s (SAT=%.2f Excel=%.2f diff=%.2f)", si_no_disminuir_lbl, sat_total_cobrados, excel_total_cobrados, diferencia)
     else:
         LOG.warning("Phase 3: could not set ingresos a disminuir dropdown")
@@ -1772,7 +1786,14 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
     diferencia_adicionales = (excel_total_cobrados or 0.0) - (sat_total_cobrados or 0.0)
     need_ingresos_adicionales = diferencia_adicionales > 1
     si_no_adicionales_lbl = "Sí" if need_ingresos_adicionales else "No"
-    if _fill_select_next_to_label(scope, page, "¿Tienes ingresos adicionales", si_no_adicionales_lbl, mapping=None, initial_dropdown_key=None):
+    if _fill_select_next_to_label(
+        scope,
+        page,
+        "¿Tienes ingresos adicionales",
+        si_no_adicionales_lbl,
+        mapping=mapping,
+        initial_dropdown_key="_isr_ingresos_adicionales",
+    ):
         LOG.info("Phase 3: ingresos adicionales = %s (SAT=%.2f Excel=%.2f diff=%.2f)", si_no_adicionales_lbl, sat_total_cobrados, excel_total_cobrados, diferencia_adicionales)
     else:
         LOG.warning("Phase 3: could not set ingresos adicionales dropdown")
@@ -1845,10 +1866,10 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
         # Resolve "Total de ingresos efectivamente cobrados" popup dialog
         dialog = None
         for use_last, dialog_loc, to_ms in [
-            (False, page.get_by_role("dialog"), 1500),
-            (False, page.locator("[role='dialog']"), 800),
-            (True, page.locator("div").filter(has_text=re.compile(r"Total de ingresos efectivamente cobrados", re.I)).filter(has_text=re.compile(r"Concepto|AGREGAR|Monto", re.I)), 600),
-            (True, page.locator("div").filter(has_text=re.compile(r"Total de ingresos efectivamente cobrados", re.I)).filter(has=page.locator("select")), 500),
+            (False, page.get_by_role("dialog"), 900),
+            (False, page.locator("[role='dialog']"), 600),
+            (True, page.locator("div").filter(has_text=re.compile(r"Total de ingresos efectivamente cobrados", re.I)).filter(has_text=re.compile(r"Concepto|AGREGAR|Monto", re.I)), 450),
+            (True, page.locator("div").filter(has_text=re.compile(r"Total de ingresos efectivamente cobrados", re.I)).filter(has=page.locator("select")), 400),
         ]:
             try:
                 d = dialog_loc.last if use_last else dialog_loc.first
@@ -1891,7 +1912,7 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
                     loc_concepto = dialog.get_by_text("Concepto", exact=False)
                 if loc_concepto.count() > 0:
                     label_concepto = loc_concepto.first
-                    label_concepto.wait_for(state="visible", timeout=400)
+                    label_concepto.wait_for(state="visible", timeout=300)
                     for xpath in [
                         "xpath=((ancestor::td | ancestor::th)[1])/following-sibling::*//select",
                         "xpath=(ancestor::tr[1])//select",
@@ -1900,10 +1921,10 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
                     ]:
                         try:
                             concepto_dd = label_concepto.locator(xpath).first
-                            concepto_dd.wait_for(state="visible", timeout=280)
-                            concepto_dd.select_option(label=sat_concepto, timeout=3000)
+                            concepto_dd.wait_for(state="visible", timeout=200)
+                            concepto_dd.select_option(label=sat_concepto, timeout=2000)
                             concepto_ok = True
-                            page.wait_for_timeout(40)
+                            page.wait_for_timeout(30)
                             break
                         except Exception:
                             continue
@@ -1912,10 +1933,10 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
             if not concepto_ok:
                 try:
                     sel = dialog.locator("select").first
-                    sel.wait_for(state="visible", timeout=400)
-                    sel.select_option(label=sat_concepto, timeout=3000)
+                    sel.wait_for(state="visible", timeout=300)
+                    sel.select_option(label=sat_concepto, timeout=2000)
                     concepto_ok = True
-                    page.wait_for_timeout(40)
+                    page.wait_for_timeout(30)
                 except Exception as e_c:
                     LOG.warning("Phase 3: Total percibidos Concepto %r: %s", sat_concepto, e_c)
             if concepto_ok:
@@ -1927,20 +1948,20 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
             importe_ok = False
             try:
                 sel_first = dialog.locator("select").first
-                sel_first.wait_for(state="visible", timeout=280)
+                sel_first.wait_for(state="visible", timeout=200)
                 for row_xpath in ["xpath=ancestor::tr[1]", "xpath=ancestor::*[.//input][1]"]:
                     try:
                         row = sel_first.locator(row_xpath)
                         if row.count() == 0:
                             continue
                         inp = row.locator("input[type='text'], input[type='number'], input:not([type])").first
-                        inp.wait_for(state="visible", timeout=250)
+                        inp.wait_for(state="visible", timeout=180)
                         if inp.get_attribute("disabled") or inp.get_attribute("readonly"):
                             continue
                         inp.click()
                         inp.fill(importe_str)
                         importe_ok = True
-                        page.wait_for_timeout(30)
+                        page.wait_for_timeout(25)
                         break
                     except Exception:
                         continue
@@ -1949,7 +1970,7 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
             if not importe_ok:
                 try:
                     label_importe = dialog.get_by_text("Importe", exact=False).first
-                    label_importe.wait_for(state="visible", timeout=350)
+                    label_importe.wait_for(state="visible", timeout=250)
                     for xpath in [
                         "xpath=((ancestor::td | ancestor::th)[1])/following-sibling::*//input[not(@disabled)]",
                         "xpath=(ancestor::tr[1])//input[not(@disabled)]",
@@ -1957,13 +1978,13 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
                     ]:
                         try:
                             importe_inp = label_importe.locator(xpath).first
-                            importe_inp.wait_for(state="visible", timeout=250)
+                            importe_inp.wait_for(state="visible", timeout=180)
                             if importe_inp.get_attribute("readonly"):
                                 continue
                             importe_inp.click()
                             importe_inp.fill(importe_str)
                             importe_ok = True
-                            page.wait_for_timeout(30)
+                            page.wait_for_timeout(25)
                             break
                         except Exception:
                             continue
@@ -1978,13 +1999,13 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
             if concepto_ok and importe_ok:
                 try:
                     btn_scope = dialog if dialog != page else page
-                    btn_scope.get_by_role("button", name=re.compile(r"GUARDAR", re.I)).first.click(timeout=800)
-                    page.wait_for_timeout(80)
+                    btn_scope.get_by_role("button", name=re.compile(r"GUARDAR", re.I)).first.click(timeout=600)
+                    page.wait_for_timeout(60)
                     try:
                         confirm_btn = page.get_by_role("button", name=re.compile(r"ACEPTAR", re.I)).first
-                        confirm_btn.wait_for(state="visible", timeout=800)
+                        confirm_btn.wait_for(state="visible", timeout=500)
                         confirm_btn.click()
-                        page.wait_for_timeout(100)
+                        page.wait_for_timeout(70)
                     except Exception:
                         pass
                 except Exception as e_btn:
@@ -2494,18 +2515,16 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
         LOG.info("Phase 5: Pago section loaded; next: dropdowns *¿Tienes compensaciones por aplicar? and *¿Tienes estímulos por aplicar? → No")
 
         LOG.info("Phase 5: selecting *¿Tienes compensaciones por aplicar? → No")
-        comp_ok = _fill_select_next_to_label(scope, page, "¿Tienes compensaciones por aplicar", "No", mapping=None, initial_dropdown_key=None)
-        if not comp_ok:
-            comp_ok = _fill_pago_custom_dropdown(page, "compensaciones por aplicar", "No")
+        # Pago uses custom dropdown widgets; go directly to the Pago-specific helper to avoid slow generic resolution.
+        comp_ok = _fill_pago_custom_dropdown(page, "compensaciones por aplicar", "No")
         if comp_ok:
             LOG.info("Phase 5: dropdown *¿Tienes compensaciones por aplicar? set to No")
         else:
             LOG.warning("Phase 5: could not set *¿Tienes compensaciones por aplicar? to No")
-        page.wait_for_timeout(200)
+        page.wait_for_timeout(120)
         LOG.info("Phase 5: selecting *¿Tienes estímulos por aplicar? → No")
-        estim_ok = _fill_select_next_to_label(scope, page, "¿Tienes estímulos por aplicar", "No", mapping=None, initial_dropdown_key=None)
-        if not estim_ok:
-            estim_ok = _fill_pago_custom_dropdown(page, "estímulos por aplicar", "No")
+        # Same for estímulos: use Pago-specific helper directly.
+        estim_ok = _fill_pago_custom_dropdown(page, "estímulos por aplicar", "No")
         if estim_ok:
             LOG.info("Phase 5: dropdown *¿Tienes estímulos por aplicar? set to No")
         else:
@@ -2521,16 +2540,16 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
         ]:
             try:
                 first_btn = loc.first
-                first_btn.wait_for(state="visible", timeout=6000)
+                first_btn.wait_for(state="visible", timeout=4000)
                 if first_btn.get_attribute("disabled"):
                     continue
-                first_btn.click(timeout=4000)
+                first_btn.click(timeout=3000)
                 guardar_pago_clicked = True
                 break
             except Exception:
                 continue
         if guardar_pago_clicked:
-            page.wait_for_timeout(1500)
+            page.wait_for_timeout(1000)
             LOG.info("Phase 5: GUARDAR clicked, waiting for load")
             page.wait_for_load_state("domcontentloaded", timeout=5000)
             page.wait_for_timeout(500)
@@ -2546,15 +2565,15 @@ def _fill_pago_custom_dropdown(page: Page, label_substring: str, option_text: st
         # 1) get_by_label: control may be associated by label text or aria-label
         try:
             control = page.get_by_label(re.compile(re.escape(label_substring), re.I)).first
-            control.wait_for(state="visible", timeout=1200)
+            control.wait_for(state="visible", timeout=700)
             tag = control.evaluate("el => el.tagName")
             if tag and str(tag).upper() == "SELECT":
-                control.select_option(label=option_text, timeout=2000)
+                control.select_option(label=option_text, timeout=1500)
                 LOG.info("Phase 5: set dropdown (get_by_label + select_option) for %r → %s", label_substring, option_text)
                 return True
-            control.click(timeout=1500)
-            page.wait_for_timeout(350)
-            page.get_by_role("option", name=re.compile(re.escape(option_text), re.I)).first.click(timeout=1500)
+            control.click(timeout=1000)
+            page.wait_for_timeout(250)
+            page.get_by_role("option", name=re.compile(re.escape(option_text), re.I)).first.click(timeout=1200)
             return True
         except Exception:
             pass
@@ -2571,8 +2590,8 @@ def _fill_pago_custom_dropdown(page: Page, label_substring: str, option_text: st
                 continue
         if label_el is None:
             return False
-        label_el.scroll_into_view_if_needed(timeout=1500)
-        page.wait_for_timeout(100)
+        label_el.scroll_into_view_if_needed(timeout=800)
+        page.wait_for_timeout(60)
 
         # 2) First <select> that follows the label in DOM (same row or next cell)
         for xpath_select in [
@@ -2582,8 +2601,8 @@ def _fill_pago_custom_dropdown(page: Page, label_substring: str, option_text: st
         ]:
             try:
                 sel = label_el.locator(xpath_select).first
-                sel.wait_for(state="visible", timeout=600)
-                sel.select_option(label=option_text, timeout=2000)
+                sel.wait_for(state="visible", timeout=400)
+                sel.select_option(label=option_text, timeout=1500)
                 LOG.info("Phase 5: set dropdown (select after label) for %r → %s", label_substring, option_text)
                 return True
             except Exception:
@@ -2619,17 +2638,17 @@ def _fill_pago_custom_dropdown(page: Page, label_substring: str, option_text: st
                 continue
         if trigger is None:
             return False
-        trigger.click(timeout=2000)
-        page.wait_for_timeout(350)
+        trigger.click(timeout=1500)
+        page.wait_for_timeout(250)
         option_clicked = False
         # Prefer option inside listbox (opened dropdown) to avoid clicking another "No" on the page
         for listbox_selector in ["[role='listbox']", "[role='menu']", ".dropdown-menu", "[class*='listbox']", "[class*='dropdown']"]:
             try:
                 listbox = page.locator(listbox_selector).first
-                listbox.wait_for(state="visible", timeout=800)
+                listbox.wait_for(state="visible", timeout=500)
                 opt = listbox.get_by_role("option", name=re.compile(re.escape(option_text), re.I)).first
-                opt.wait_for(state="visible", timeout=800)
-                opt.click(timeout=1500)
+                opt.wait_for(state="visible", timeout=500)
+                opt.click(timeout=1200)
                 option_clicked = True
                 break
             except Exception:
@@ -2643,13 +2662,13 @@ def _fill_pago_custom_dropdown(page: Page, label_substring: str, option_text: st
             ]:
                 try:
                     first_opt = opt_loc.first
-                    first_opt.wait_for(state="visible", timeout=1500)
-                    first_opt.click(timeout=1500)
+                    first_opt.wait_for(state="visible", timeout=900)
+                    first_opt.click(timeout=1200)
                     option_clicked = True
                     break
                 except Exception:
                     continue
-        page.wait_for_timeout(150)
+        page.wait_for_timeout(100)
         return option_clicked
     except Exception as e:
         LOG.debug("Phase 5 custom dropdown (%s → %s) failed: %s", label_substring, option_text, e)
