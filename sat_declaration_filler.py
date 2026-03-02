@@ -1297,7 +1297,8 @@ def _fill_input_next_to_label(
         label_el.wait_for(state="visible", timeout=800)
     except Exception:
         return False
-    if label_el.locator("xpath=ancestor::*[contains(@class,'modal') or @role='dialog']").count() > 0:
+    # Only skip when label is inside a modal/dialog and we are searching the full page (avoid matching elements in a popup when we want main page). When scope is the dialog, we want to match labels inside it.
+    if page_or_scope is page_for_wait and label_el.locator("xpath=ancestor::*[contains(@class,'modal') or @role='dialog']").count() > 0:
         return False
 
     # Strategy 1: Label "for" attribute → input id (same as ISR: label for="xxx" → #xxx)
@@ -2961,6 +2962,49 @@ def fill_iva_simplificado(page: Page, mapping: dict, data: dict) -> None:
     LOG.info("")
 
 
+def _fill_iva_popup_input_by_position(dialog_scope, page_for_wait: Page, step_1based: int, value_str: str) -> bool:
+    """Fallback for IVA acreditable popup: fill the nth visible editable input in dialog (1-based). Reuses ISR modal pattern (same-row / position)."""
+    def _set(inp, val: str) -> bool:
+        try:
+            cur = (inp.input_value() or inp.get_attribute("value") or "").strip()
+            if cur == val or (cur.replace(",", "") == val.replace(",", "")):
+                return True
+            inp.scroll_into_view_if_needed(timeout=500)
+            inp.click()
+            page_for_wait.wait_for_timeout(80)
+            inp.fill("")
+            inp.fill(val)
+            page_for_wait.wait_for_timeout(150)
+            return (inp.input_value() or "").strip() == val or (inp.input_value() or "").replace(",", "") == val.replace(",", "")
+        except Exception:
+            return False
+
+    try:
+        inputs = dialog_scope.locator(
+            "input[type='text'], input[type='number'], input:not([type='submit']):not([type='button']):not([type='hidden'])"
+        )
+        idx = step_1based - 1
+        n = 0
+        for i in range(min(inputs.count(), 15)):
+            inp = inputs.nth(i)
+            try:
+                if not inp.is_visible(timeout=200):
+                    continue
+                if inp.get_attribute("disabled") or inp.get_attribute("readonly"):
+                    continue
+                if n == idx:
+                    if _set(inp, value_str):
+                        LOG.info("IVA Determinación popup: filled input by position (index %s)", step_1based)
+                        return True
+                    return False
+                n += 1
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return False
+
+
 def _fill_iva_input_by_position(
     page_for_wait: Page, scope, step_1based: int, total_fields: int, value_str: str
 ) -> bool:
@@ -3106,7 +3150,12 @@ def fill_iva_simplificado_determinacion(page: Page, mapping: dict, data: dict) -
         iva_acred_str = str(int(round(iva_acred_val))) if iva_acred_val is not None else "0"
         label_grav = "IVA acreditable por actividades gravadas a tasa 16% u 8% y tasa 0%"
         LOG.info("IVA Determinación popup: filling '%s' with %s (from Excel 'IVA acreditable del periodo')", label_grav, iva_acred_str)
-        if _fill_input_next_to_label(dialog, page, label_grav, iva_acred_str):
+        filled_grav = _fill_input_next_to_label(dialog, page, label_grav, iva_acred_str)
+        if not filled_grav:
+            filled_grav = _fill_input_next_to_label(dialog, page, "*" + label_grav, iva_acred_str)
+        if not filled_grav:
+            filled_grav = _fill_iva_popup_input_by_position(dialog, page, 1, iva_acred_str)
+        if filled_grav:
             LOG.info("IVA Determinación popup: filled '%s'", label_grav)
         else:
             LOG.warning("IVA Determinación popup: could not fill '%s'", label_grav)
@@ -3114,7 +3163,12 @@ def fill_iva_simplificado_determinacion(page: Page, mapping: dict, data: dict) -
         # *IVA acreditable por actividades mixtas = 0
         label_mixtas = "IVA acreditable por actividades mixtas"
         LOG.info("IVA Determinación popup: filling '%s' with 0", label_mixtas)
-        if _fill_input_next_to_label(dialog, page, label_mixtas, "0"):
+        filled_mixtas = _fill_input_next_to_label(dialog, page, label_mixtas, "0")
+        if not filled_mixtas:
+            filled_mixtas = _fill_input_next_to_label(dialog, page, "*" + label_mixtas, "0")
+        if not filled_mixtas:
+            filled_mixtas = _fill_iva_popup_input_by_position(dialog, page, 2, "0")
+        if filled_mixtas:
             LOG.info("IVA Determinación popup: filled '%s' with 0", label_mixtas)
         else:
             LOG.warning("IVA Determinación popup: could not fill '%s'", label_mixtas)
