@@ -910,6 +910,57 @@ def open_obligation_isr(page, mapping: dict) -> bool:
     return ok
 
 
+def click_administracion_declaracion(page: Page, mapping: dict) -> bool:
+    """Click the 'ADMINISTRACIÓN DE LA DECLARACIÓN' button (top right on ISR/IVA form) to return to the administración menu. Returns True if clicked."""
+    LOG.info("IVA: step — clicking 'ADMINISTRACIÓN DE LA DECLARACIÓN' to return to administración menu")
+    ok = _try_click(page, mapping, "_btn_administracion_declaracion")
+    if ok:
+        LOG.info("IVA: clicked 'ADMINISTRACIÓN DE LA DECLARACIÓN' (mapping)")
+        page.wait_for_timeout(1500)
+        return True
+    for btn in page.get_by_role("button", name=re.compile(r"ADMINISTRACIÓN\s+DE\s+LA\s+DECLARACIÓN", re.I)).all():
+        try:
+            if btn.is_visible():
+                btn.click(timeout=3000)
+                LOG.info("IVA: clicked 'ADMINISTRACIÓN DE LA DECLARACIÓN' (button role)")
+                page.wait_for_timeout(1500)
+                return True
+        except Exception:
+            continue
+    for elem in page.get_by_text(re.compile(r"ADMINISTRACIÓN\s+DE\s+LA\s+DECLARACIÓN", re.I)).all():
+        try:
+            if elem.is_visible() and elem.locator("xpath=ancestor::*[contains(@class,'modal') or @role='dialog']").count() == 0:
+                elem.click(timeout=3000)
+                LOG.info("IVA: clicked 'ADMINISTRACIÓN DE LA DECLARACIÓN' (text)")
+                page.wait_for_timeout(1500)
+                return True
+        except Exception:
+            continue
+    LOG.warning("IVA: could not click 'ADMINISTRACIÓN DE LA DECLARACIÓN'")
+    return False
+
+
+def open_obligation_iva(page: Page, mapping: dict) -> bool:
+    """Select 'IVA simplificado de confianza' on the administración de la declaración page to open the IVA form. Returns True if clicked."""
+    LOG.info("IVA: step — selecting 'IVA simplificado de confianza' on administración page")
+    ok = _try_click(page, mapping, "_select_obligation_iva")
+    if ok:
+        LOG.info("IVA: clicked 'IVA simplificado de confianza' (mapping)")
+        page.wait_for_timeout(1500)
+        return True
+    for elem in page.get_by_text(re.compile(r"IVA\s+simplificado\s+de\s+confianza", re.I)).all():
+        try:
+            if elem.is_visible() and elem.locator("xpath=ancestor::*[contains(@class,'modal') or @role='dialog']").count() == 0:
+                elem.click(timeout=3000)
+                LOG.info("IVA: clicked 'IVA simplificado de confianza' (text)")
+                page.wait_for_timeout(1500)
+                return True
+        except Exception:
+            continue
+    LOG.warning("IVA: could not click 'IVA simplificado de confianza'")
+    return False
+
+
 def _set_dropdown_by_label(page: Page, label_substring: str, value: str, timeout_ms: int = 3000) -> bool:
     """Set a <select> that is associated with a label containing label_substring. value is option label (e.g. Sí/No)."""
     try:
@@ -1149,6 +1200,161 @@ def _click_capturar_next_to_label(page_or_scope: Page | Frame, label_substring: 
             return True
         except Exception:
             continue
+    return False
+
+
+def _fill_input_next_to_label(
+    page_or_scope: Page | Frame, page_for_wait: Page, label_substring: str, value_str: str, *, occurrence: int = 0
+) -> bool:
+    """Find the label containing label_substring, then the input in same row or following in DOM, and fill it (same technique as Importe in ISR). Returns True if filled."""
+    def _values_match(got: str, expected: str) -> bool:
+        if got == expected:
+            return True
+        # SAT often displays numbers with commas (e.g. 58,085); compare as numbers
+        g = (got or "").replace(",", "").strip()
+        e = (expected or "").replace(",", "").strip()
+        if g == e:
+            return True
+        try:
+            return float(g) == float(e)
+        except ValueError:
+            return False
+
+    def _set_value(inp, val: str) -> bool:
+        def _get_val():
+            try:
+                return (inp.input_value() or inp.get_attribute("value") or "").strip()
+            except Exception:
+                return ""
+        try:
+            inp.scroll_into_view_if_needed(timeout=1000)
+            inp.click()
+            page_for_wait.wait_for_timeout(100)
+            inp.fill("")
+            page_for_wait.wait_for_timeout(80)
+            inp.fill(val)
+            page_for_wait.wait_for_timeout(150)
+            if _values_match(_get_val(), val):
+                return True
+            inp.click()
+            page_for_wait.wait_for_timeout(80)
+            page_for_wait.keyboard.press("Control+a")
+            page_for_wait.wait_for_timeout(50)
+            page_for_wait.keyboard.type(val, delay=50)
+            page_for_wait.wait_for_timeout(150)
+            if _values_match(_get_val(), val):
+                return True
+            inp.click()
+            page_for_wait.wait_for_timeout(80)
+            inp.press_sequentially(val, delay=60)
+            page_for_wait.wait_for_timeout(150)
+            if _values_match(_get_val(), val):
+                return True
+            inp.evaluate("""el => { el.value = arguments[0]; el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); }""", val)
+            page_for_wait.wait_for_timeout(100)
+            return _values_match(_get_val(), val)
+        except Exception:
+            return False
+
+    try:
+        loc = page_or_scope.get_by_text(re.compile(re.escape(label_substring), re.I))
+        if loc.count() <= occurrence:
+            return False
+        label_el = loc.nth(occurrence)
+        label_el.wait_for(state="visible", timeout=800)
+    except Exception:
+        return False
+    if label_el.locator("xpath=ancestor::*[contains(@class,'modal') or @role='dialog']").count() > 0:
+        return False
+
+    # Strategy 1: Label "for" attribute → input id (same as ISR: label for="xxx" → #xxx)
+    try:
+        for_id = label_el.get_attribute("for")
+        if not for_id:
+            try:
+                anc_label = label_el.locator("xpath=ancestor::label[1]").first
+                if anc_label.count() > 0:
+                    for_id = anc_label.get_attribute("for")
+            except Exception:
+                pass
+        if for_id and str(for_id).strip():
+            inp = page_or_scope.locator(f"#{re.escape(str(for_id).strip())}").first
+            if inp.count() > 0:
+                inp.wait_for(state="visible", timeout=500)
+                if not inp.get_attribute("disabled") and _set_value(inp, value_str):
+                    return True
+    except Exception:
+        pass
+
+    # Strategy 2: Same-row input (SAT ISR uses <tr>; IVA may use tr or div.row)
+    try:
+        row_inputs = label_el.locator("xpath=(ancestor::tr[1])//input")
+        n = row_inputs.count()
+        for i in range(n):
+            try:
+                inp = row_inputs.nth(i)
+                inp.wait_for(state="visible", timeout=400)
+                if inp.get_attribute("disabled"):
+                    continue
+                if _set_value(inp, value_str):
+                    return True
+            except Exception:
+                continue
+    except Exception:
+        pass
+
+    # Strategy 3: First ancestor that contains an input (works for div-based rows: label and input in same container)
+    try:
+        container = label_el.locator("xpath=ancestor::*[.//input][1]").first
+        if container.count() > 0:
+            for inp in container.locator("input").all():
+                try:
+                    if not inp.is_visible() or inp.get_attribute("disabled"):
+                        continue
+                    if _set_value(inp, value_str):
+                        return True
+                except Exception:
+                    continue
+    except Exception:
+        pass
+
+    for input_index in range(1, 6):
+        try:
+            following_input = label_el.locator(f"xpath=following::input[{input_index}]")
+            if following_input.count() > 0:
+                inp = following_input.first
+                inp.wait_for(state="visible", timeout=500)
+                if inp.get_attribute("disabled"):
+                    continue
+                if _set_value(inp, value_str):
+                    return True
+        except Exception:
+            continue
+    for xpath in [
+        "xpath=((ancestor::td | ancestor::th)[1])/following-sibling::*//input",
+        "xpath=(ancestor::tr[1])//input",
+        "xpath=following-sibling::*//input",
+    ]:
+        try:
+            inp = label_el.locator(xpath).first
+            if inp.count() == 0:
+                continue
+            inp.wait_for(state="visible", timeout=400)
+            if inp.get_attribute("disabled"):
+                continue
+            if _set_value(inp, value_str):
+                return True
+        except Exception:
+            continue
+    try:
+        control = page_or_scope.get_by_label(re.compile(re.escape(label_substring), re.I)).first
+        control.wait_for(state="visible", timeout=400)
+        tag = control.evaluate("el => (el && el.tagName) ? el.tagName.toLowerCase() : ''")
+        if tag == "input" or tag == "":
+            if _set_value(control, value_str):
+                return True
+    except Exception:
+        pass
     return False
 
 
@@ -2704,6 +2910,184 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
         LOG.warning("Phase 5 (Pago tab / compensaciones / estímulos / GUARDAR) failed: %s", e)
 
 
+def fill_iva_simplificado(page: Page, mapping: dict, data: dict) -> None:
+    """
+    Central entry for IVA simplificado de confianza. Run after fill_isr_ingresos_form.
+    Navigates: ADMINISTRACIÓN DE LA DECLARACIÓN → IVA simplificado de confianza → fill Determinación form → GUARDAR → Pago tab.
+    """
+    LOG.info("")
+    LOG.info("===== IVA simplificado de confianza (central) =====")
+    if not click_administracion_declaracion(page, mapping):
+        LOG.warning("IVA simplificado: could not click ADMINISTRACIÓN DE LA DECLARACIÓN")
+    page.wait_for_timeout(1500)
+    if not open_obligation_iva(page, mapping):
+        LOG.warning("IVA simplificado: could not click IVA simplificado de confianza")
+    page.wait_for_timeout(1500)
+    fill_iva_simplificado_determinacion(page, mapping, data)
+    LOG.info("===== IVA simplificado de confianza (central) complete =====")
+    LOG.info("")
+
+
+def fill_iva_simplificado_determinacion(page: Page, mapping: dict, data: dict) -> None:
+    """
+    Fill IVA simplificado de confianza Determinación form (run after navigating from administración to IVA).
+    Main form: Actividades gravadas 16%, 0%, exentas, no objeto, IVA retenido (from Excel).
+    Then CAPTURAR next to *IVA acreditable del periodo → popup: fill IVA acreditable por actividades gravadas 16%/8%/0% (from Excel), actividades mixtas = 0 → CERRAR → GUARDAR → click Pago tab.
+    """
+    LOG.info("")
+    LOG.info("===== IVA simplificado de confianza: Determinación form =====")
+    label_map = data.get("label_map") or {}
+    scope = page
+
+    # Wait for IVA form (Determinación)
+    LOG.info("IVA Determinación: waiting for IVA form to load")
+    page.wait_for_timeout(800)
+    try:
+        page.get_by_text(re.compile(r"IVA\s+simplificado\s+de\s+confianza", re.I)).first.wait_for(state="visible", timeout=5000)
+        LOG.info("IVA Determinación: IVA form title visible")
+    except Exception:
+        LOG.debug("IVA Determinación: IVA form title wait skipped or timed out")
+    page.wait_for_timeout(400)
+
+    # Excel label -> (form label substring, optional)
+    main_fields = [
+        ("Actividades gravadas a la tasa del 16%", "Actividades gravadas a la tasa del 16%"),
+        ("Actividades gravadas a la tasa del 0% otros", "Actividades gravadas a la tasa del 0%"),
+        ("Actividades exentas", "Actividades exentas"),
+        ("Actividades no objeto de impuesto", "Actividades no objeto del impuesto"),
+        ("IVA retenido a favor", "IVA retenido"),
+    ]
+    for step, (excel_label, form_label) in enumerate(main_fields, start=1):
+        raw = label_map.get(excel_label)
+        val = _parse_currency(raw) if raw is not None else 0.0
+        value_str = str(int(round(val))) if val is not None else "0"
+        LOG.info("IVA Determinación: step %s/5 — filling %r (excel %r) with value %s", step, form_label, excel_label, value_str)
+        if _fill_input_next_to_label(scope, page, form_label, value_str):
+            LOG.info("IVA Determinación: step %s/5 — filled %r", step, form_label)
+        else:
+            LOG.warning("IVA Determinación: step %s/5 — could not fill %r", step, form_label)
+        page.wait_for_timeout(200)
+
+    # Click CAPTURAR next to *IVA acreditable del periodo
+    LOG.info("IVA Determinación: step — clicking CAPTURAR next to '*IVA acreditable del periodo'")
+    capturar_ok = _click_capturar_next_to_label(scope, "IVA acreditable del periodo", occurrence=0)
+    if not capturar_ok:
+        capturar_ok = _click_capturar_next_to_label(scope, "*IVA acreditable del periodo", occurrence=0)
+    if not capturar_ok:
+        LOG.warning("IVA Determinación: could not click CAPTURAR for IVA acreditable del periodo")
+    else:
+        LOG.info("IVA Determinación: CAPTURAR clicked; waiting for popup")
+        page.wait_for_timeout(600)
+        # Wait for popup
+        dialog = None
+        for _ in range(8):
+            try:
+                if page.get_by_role("dialog").first.is_visible(timeout=300):
+                    dialog = page.get_by_role("dialog").first
+                    LOG.info("IVA Determinación: popup visible (dialog role)")
+                    break
+                if page.get_by_text(re.compile(r"IVA\s+acreditable\s+del\s+periodo", re.I)).first.is_visible():
+                    dialog = page.get_by_text(re.compile(r"IVA\s+acreditable\s+del\s+periodo", re.I)).first.locator("xpath=ancestor::*[contains(@class,'modal') or @role='dialog'][1]").first
+                    LOG.info("IVA Determinación: popup visible (IVA acreditable del periodo title)")
+                    break
+            except Exception:
+                pass
+            page.wait_for_timeout(400)
+        if dialog is None:
+            dialog = page
+            LOG.debug("IVA Determinación: using page as popup scope")
+        # Popup: *IVA acreditable por actividades gravadas a tasa 16% u 8% y tasa 0% <- Excel "IVA acreditable del periodo"
+        iva_acred_raw = label_map.get("IVA acreditable del periodo")
+        iva_acred_val = _parse_currency(iva_acred_raw) if iva_acred_raw is not None else 0.0
+        iva_acred_str = str(int(round(iva_acred_val))) if iva_acred_val is not None else "0"
+        label_grav = "IVA acreditable por actividades gravadas a tasa 16% u 8% y tasa 0%"
+        LOG.info("IVA Determinación popup: filling '%s' with %s (from Excel 'IVA acreditable del periodo')", label_grav, iva_acred_str)
+        if _fill_input_next_to_label(dialog, page, label_grav, iva_acred_str):
+            LOG.info("IVA Determinación popup: filled '%s'", label_grav)
+        else:
+            LOG.warning("IVA Determinación popup: could not fill '%s'", label_grav)
+        page.wait_for_timeout(150)
+        # *IVA acreditable por actividades mixtas = 0
+        label_mixtas = "IVA acreditable por actividades mixtas"
+        LOG.info("IVA Determinación popup: filling '%s' with 0", label_mixtas)
+        if _fill_input_next_to_label(dialog, page, label_mixtas, "0"):
+            LOG.info("IVA Determinación popup: filled '%s' with 0", label_mixtas)
+        else:
+            LOG.warning("IVA Determinación popup: could not fill '%s'", label_mixtas)
+        page.wait_for_timeout(200)
+        LOG.info("IVA Determinación popup: clicking CERRAR")
+        page.get_by_role("button", name=re.compile(r"CERRAR", re.I)).first.click(timeout=2000)
+        LOG.info("IVA Determinación popup: CERRAR clicked; popup closed")
+        page.wait_for_timeout(800)
+
+    # GUARDAR main form
+    LOG.info("IVA Determinación: clicking GUARDAR (main form)")
+    guardar_ok = False
+    for loc in [
+        page.get_by_role("button", name=re.compile(r"GUARDAR", re.I)),
+        page.locator("input[type='submit'][value*='GUARDAR'], input[type='button'][value*='GUARDAR']"),
+        page.get_by_text("GUARDAR", exact=True),
+    ]:
+        try:
+            first_btn = loc.first
+            first_btn.wait_for(state="visible", timeout=4000)
+            if first_btn.locator("xpath=ancestor::*[contains(@class,'modal') or @role='dialog']").count() > 0:
+                continue
+            if first_btn.get_attribute("disabled"):
+                continue
+            first_btn.click(timeout=3000)
+            guardar_ok = True
+            LOG.info("IVA Determinación: GUARDAR clicked")
+            break
+        except Exception:
+            continue
+    if not guardar_ok:
+        LOG.warning("IVA Determinación: could not click GUARDAR")
+    else:
+        page.wait_for_timeout(1500)
+        page.wait_for_load_state("domcontentloaded", timeout=5000)
+        page.wait_for_timeout(500)
+        LOG.info("IVA Determinación: waiting for load after GUARDAR complete")
+    # Click Pago tab (next to Determinación)
+    LOG.info("IVA: step — clicking Pago tab (next to Determinación)")
+    pago_clicked = False
+    def _try_click_pago(elem, *, force: bool = False) -> bool:
+        try:
+            elem.wait_for(state="visible", timeout=2000)
+            elem.scroll_into_view_if_needed(timeout=2000)
+            if force:
+                elem.click(force=True, timeout=3000)
+            else:
+                elem.click(timeout=3000)
+            page.wait_for_timeout(500)
+            return True
+        except Exception:
+            return False
+    for tab_loc in [page.get_by_role("tab", name=re.compile(r"Pago", re.I)), page.get_by_text("Pago", exact=True)]:
+        try:
+            if tab_loc.count() > 0 and _try_click_pago(tab_loc.first):
+                pago_clicked = True
+                break
+        except Exception:
+            continue
+    if not pago_clicked:
+        for elem in page.get_by_text("Pago", exact=True).all():
+            try:
+                if elem.is_visible() and elem.locator("xpath=ancestor::*[contains(@class,'modal') or @role='dialog']").count() == 0:
+                    if _try_click_pago(elem):
+                        pago_clicked = True
+                        break
+            except Exception:
+                continue
+    if pago_clicked:
+        LOG.info("IVA: Pago tab clicked")
+        page.wait_for_timeout(800)
+    else:
+        LOG.warning("IVA: could not click Pago tab")
+    LOG.info("===== IVA simplificado de confianza: Determinación form complete =====")
+    LOG.info("")
+
+
 def _fill_pago_custom_dropdown(page: Page, label_substring: str, option_text: str) -> bool:
     """Handle Pago section dropdowns: try native <select> after label, then custom trigger (combobox / 'Selecciona') + click option. Returns True if option was set/clicked."""
     try:
@@ -3227,13 +3611,15 @@ def run(
     test_initial_form: bool = False,
     test_full: bool = False,
     test_phase3: bool = False,
+    test_iva: bool = False,
 ) -> bool:
     """
     Full flow: read Excel → get e.firma → login SAT → navigate → fill initial → fill ISR → fill IVA → check totals → send.
     If test_login=True: only open SAT and perform e.firma login (no DB; use test_* in config). Returns True if login succeeded.
     If test_initial_form=True: login then fill Declaración Provisional initial form (no Excel; use test_year, test_month, test_periodicidad in config).
-    If test_full=True: login + fill initial form + phase 3 (ISR Ingresos) + phase 4 (Determinación, ISR retenido VER DETALLE) + phase 5 (Pago: compensaciones/estímulos → No, GUARDAR). e.firma and data from config/Excel. No IVA/send.
+    If test_full=True: login + fill initial form + phase 3 (ISR Ingresos) + phase 4 (Determinación, ISR retenido VER DETALLE) + phase 5 (Pago) + IVA simplificado de confianza (ADMINISTRACIÓN → IVA → Determinación → Pago tab). e.firma and data from config/Excel. No send.
     If test_phase3=True: login + fill initial form + select ISR simplificado de confianza + fill ISR section (Ingresos, etc.). Stops after ISR fill; no IVA/send. Requires --workbook.
+    If test_iva=True: login + fill initial form + transition to phase 3 (SIGUIENTE, CERRAR) + select IVA simplificado de confianza + fill IVA Determinación form. No ISR. Requires --workbook.
     Returns True if declaration was sent (or test step OK), False otherwise. Logs and prints outcome.
     """
     config = load_config(config_path)
@@ -3395,7 +3781,9 @@ def run(
                         page.wait_for_timeout(500)
                         fill_isr_ingresos_form(page, mapping, data)
                         fill_obligation_section(page, mapping, label_map, isr_labels)
-                        LOG.info("Test full run: initial form + phase 3 (ISR Ingresos) + phase 4 (Determinación) + phase 5 (Pago) complete. Browser will stay open 10s for inspection.")
+                        LOG.info("Test full run: ISR complete; running IVA simplificado de confianza (central)")
+                        fill_iva_simplificado(page, mapping, data)
+                        LOG.info("Test full run: initial form + ISR + IVA Determinación + Pago tab complete. Browser will stay open 10s for inspection.")
                         page.wait_for_timeout(10000)
                         run_success = True
                         return True
@@ -3420,6 +3808,72 @@ def run(
                         os._exit(0 if run_success else 1)
             except Exception as e:
                 LOG.exception("Test full run failed")
+                print(str(e), file=sys.stderr)
+                if attempt == 0:
+                    LOG.info("Closing and retrying once in %s seconds...", RETRY_WAIT_SECONDS)
+                    time.sleep(RETRY_WAIT_SECONDS)
+                else:
+                    return False
+        return False
+
+    # Test IVA only: login, initial form, transition to phase 3, then IVA simplificado de confianza (no ISR).
+    if test_iva:
+        if not workbook_path:
+            raise ValueError("Test IVA run requires --workbook")
+        LOG.info("Test IVA: login + initial form + phase 2→3 (SIGUIENTE, CERRAR) + IVA simplificado de confianza (Determinación); e.firma and data from config/Excel; no ISR/send")
+        data = read_impuestos(workbook_path)
+        data["workbook_path"] = workbook_path
+        LOG.info("Period: %s-%s, periodicidad: %s", data.get("year"), data.get("month"), data.get("periodicidad"))
+        efirma = get_efirma_from_config(config)
+        run_success = False
+        for attempt in range(2):
+            try:
+                with sync_playwright() as p:
+                    browser = p.chromium.launch(headless=False)
+                    context = browser.new_context(accept_downloads=True)
+                    page = context.new_page()
+                    _run_context = {"page": page, "mapping": mapping}
+                    try:
+                        login_sat(page, efirma, mapping, base_url)
+                        LOG.info("Phase 1: Logged in to SAT")
+                        print()
+                        LOG.info("\n")
+                        if not open_configuration_form(page, mapping):
+                            LOG.warning("Could not click Presentar declaración; continuing.")
+                        dismiss_draft_if_present(page, mapping)
+                        fill_initial_form(page, data, mapping)
+                        page.wait_for_timeout(400)
+                        print()
+                        LOG.info("\n")
+                        LOG.info("Phase 2→3: SIGUIENTE, wait for load, CERRAR pop-up")
+                        if not transition_initial_to_phase3(page, mapping):
+                            LOG.warning("Transition to phase 3 had issues; continuing.")
+                        LOG.info("Test IVA: Selecting IVA simplificado de confianza (skip ISR)")
+                        if not open_obligation_iva(page, mapping):
+                            LOG.warning("Could not click IVA simplificado de confianza")
+                        page.wait_for_timeout(1500)
+                        fill_iva_simplificado_determinacion(page, mapping, data)
+                        LOG.info("Test IVA: login + initial form + IVA Determinación + Pago tab complete. Browser will stay open 10s for inspection.")
+                        page.wait_for_timeout(10000)
+                        run_success = True
+                        return True
+                    finally:
+                        _run_context = None
+                        time.sleep(0.5)
+                        try:
+                            page.close()
+                        except Exception as e:
+                            LOG.debug("Page close: %s", e)
+                        try:
+                            context.close()
+                        except Exception as e:
+                            LOG.debug("Context close: %s", e)
+                        try:
+                            browser.close()
+                        except Exception as e:
+                            LOG.debug("Browser close: %s", e)
+            except Exception as e:
+                LOG.exception("Test IVA failed")
                 print(str(e), file=sys.stderr)
                 if attempt == 0:
                     LOG.info("Closing and retrying once in %s seconds...", RETRY_WAIT_SECONDS)
@@ -3555,7 +4009,11 @@ def run(
                     fill_obligation_section(page, mapping, label_map, isr_labels)
                     page.wait_for_timeout(700)
 
-                    # Fill IVA section
+                    # IVA simplificado de confianza (central: ADMINISTRACIÓN → IVA → Determinación → Pago tab)
+                    fill_iva_simplificado(page, mapping, data)
+                    page.wait_for_timeout(700)
+
+                    # Fill any remaining IVA fields (e.g. Pago tab) via mapping
                     iva_labels = [
                         "Actividades gravadas a la tasa del 16%",
                         "Actividades gravadas a la tasa del 8%",
@@ -3615,6 +4073,7 @@ def main() -> None:
     parser.add_argument("--test-initial-form", action="store_true", help="Test phase 2: login then fill Declaración Provisional initial form (no Excel; use test_year, test_month, test_periodicidad in config)")
     parser.add_argument("--test-full", action="store_true", help="Test full: login + initial form + phase 3 (ISR Ingresos) + phase 4 (Determinación, ISR retenido VER DETALLE) + phase 5 (Pago); e.firma from config, data from Excel (--workbook); no IVA/send")
     parser.add_argument("--test-phase3", action="store_true", help="Test phase 3: login, initial form, select ISR simplificado de confianza, fill ISR section (Ingresos etc.); requires --workbook; stops before IVA/send")
+    parser.add_argument("--test-iva", action="store_true", help="Test IVA only: login, initial form, transition to phase 3, then IVA simplificado de confianza (Determinación); requires --workbook; no ISR/send")
     args = parser.parse_args()
 
     if args.test_login:
@@ -3683,6 +4142,29 @@ def main() -> None:
             config_path=args.config,
             mapping_path=args.mapping,
             test_phase3=True,
+        )
+        sys.exit(0 if success else 1)
+
+    if args.test_iva:
+        workbook = args.workbook
+        if not workbook:
+            config_path = args.config or os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+            config = load_config(config_path)
+            t = config.get("test") or {}
+            workbook = config.get("test_workbook_path") or t.get("workbook_path")
+        if not workbook:
+            print("Error: --test-iva requires --workbook or test_workbook_path in config.json.", file=sys.stderr)
+            sys.exit(2)
+        if not os.path.isfile(workbook):
+            print(f"Error: Workbook not found: {workbook}", file=sys.stderr)
+            sys.exit(2)
+        success = run(
+            workbook_path=workbook,
+            company_id=None,
+            branch_id=None,
+            config_path=args.config,
+            mapping_path=args.mapping,
+            test_iva=True,
         )
         sys.exit(0 if success else 1)
 
