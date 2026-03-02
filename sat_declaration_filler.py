@@ -305,9 +305,9 @@ def read_impuestos(workbook_path: str) -> dict:
 
     tipo_declaracion = "Normal"
     periodo_str = f"{month:02d}" if month is not None else "(none)"
-    print(
-        f"{_debug_ts()} [Excel] initial form data to fill: Ejercicio={year}, Periodicidad={periodicidad}, "
-        f"Período={periodo_str}, Tipo={tipo_declaracion} (year/month from filename YYYYMM_; periodicidad from sheet)"
+    LOG.info(
+        "Phase 2: initial form data to fill: Ejercicio=%s, Periodicidad=%s, Período=%s, Tipo=%s (year/month from filename YYYYMM_; periodicidad from sheet)",
+        year, periodicidad, periodo_str, tipo_declaracion,
     )
     return {
         "label_map": label_map,
@@ -572,11 +572,11 @@ def login_sat(page, efirma: dict, mapping: dict, base_url: str = SAT_PORTAL_URL)
         LOG.error("SAT issue on load: %s", err)
         print(err, file=sys.stderr)
         raise RuntimeError(err)
-    print(f"{_ts()} [{_elapsed()}s] SAT page loaded, looking for e.firma button")
+    LOG.info("Phase 1: [%.2fs] SAT page loaded, looking for e.firma button", _elapsed())
 
     if not _try_click(page, mapping, "_login_e_firma_button"):
         raise RuntimeError("Could not find e.firma button on SAT login page")
-    print(f"{_ts()} [{_elapsed()}s] e.firma pressed")
+    LOG.info("Phase 1: [%.2fs] e.firma pressed", _elapsed())
     try:
         page.wait_for_url(re.compile(r".*id=fiel.*", re.I), timeout=200)
     except Exception:
@@ -588,31 +588,31 @@ def login_sat(page, efirma: dict, mapping: dict, base_url: str = SAT_PORTAL_URL)
     # Set cer, key, password with minimal delay.
     cer_input_ok = _try_fill(page, page, mapping, "_login_cer_file_input", efirma["cer_path"], is_file=True)
     if cer_input_ok:
-        print(f"{_ts()} [{_elapsed()}s] filled .cer: {os.path.basename(efirma['cer_path'])}")
+        LOG.info("Phase 1: [%.2fs] filled .cer: %s", _elapsed(), os.path.basename(efirma['cer_path']))
     key_input_ok = _try_fill(page, page, mapping, "_login_key_file_input", efirma["key_path"], is_file=True)
     if key_input_ok:
-        print(f"{_ts()} [{_elapsed()}s] filled .key: {os.path.basename(efirma['key_path'])}")
+        LOG.info("Phase 1: [%.2fs] filled .key: %s", _elapsed(), os.path.basename(efirma['key_path']))
     if not cer_input_ok or not key_input_ok:
         LOG.warning("One or both file inputs not found by selector; using generic input[type='file'] order (first=cer, second=key)")
         inputs = page.locator("input[type='file']").all()
         if len(inputs) >= 2:
             inputs[0].set_input_files(efirma["cer_path"])
             inputs[1].set_input_files(efirma["key_path"])
-            print(f"{_ts()} [{_elapsed()}s] filled .cer (fallback): {os.path.basename(efirma['cer_path'])}")
-            print(f"{_ts()} [{_elapsed()}s] filled .key (fallback): {os.path.basename(efirma['key_path'])}")
+            LOG.info("Phase 1: [%.2fs] filled .cer (fallback): %s", _elapsed(), os.path.basename(efirma['cer_path']))
+            LOG.info("Phase 1: [%.2fs] filled .key (fallback): %s", _elapsed(), os.path.basename(efirma['key_path']))
         elif len(inputs) == 1:
             inputs[0].set_input_files(efirma["cer_path"])
-            print(f"{_ts()} [{_elapsed()}s] filled .cer (fallback): {os.path.basename(efirma['cer_path'])}")
+            LOG.info("Phase 1: [%.2fs] filled .cer (fallback): %s", _elapsed(), os.path.basename(efirma['cer_path']))
             LOG.warning("Only one file input found; key may need manual selection")
 
     pwd_ok = _try_fill(page, page, mapping, "_login_password_input", efirma["password"])
     if pwd_ok:
-        print(f"{_ts()} [{_elapsed()}s] filled password: ***")
+        LOG.info("Phase 1: [%.2fs] filled password: ***", _elapsed())
     else:
-        LOG.warning("Password field not filled — check selectors")
-        print(f"{_ts()} [{_elapsed()}s] password NOT filled (check selectors)")
+        LOG.warning("Phase 1: Password field not filled — check selectors")
+        LOG.info("Phase 1: [%.2fs] password NOT filled (check selectors)", _elapsed())
     page.wait_for_timeout(50)
-    print(f"{_ts()} [{_elapsed()}s] pressing Enviar")
+    LOG.info("Phase 1: [%.2fs] pressing Enviar", _elapsed())
     # Click Enviar: try mapping first, then fallbacks (SAT markup varies; Enviar can be button or input).
     if not _try_click(page, mapping, "_login_enviar_button"):
         enviar_clicked = False
@@ -625,8 +625,7 @@ def login_sat(page, efirma: dict, mapping: dict, base_url: str = SAT_PORTAL_URL)
             try:
                 try_fn()
                 enviar_clicked = True
-                LOG.info("Clicked Enviar via fallback")
-                print(f"{_ts()} [{_elapsed()}s] Enviar pressed (fallback)")
+                LOG.info("Phase 1: Enviar pressed (fallback)")
                 break
             except Exception:
                 continue
@@ -635,16 +634,15 @@ def login_sat(page, efirma: dict, mapping: dict, base_url: str = SAT_PORTAL_URL)
             try:
                 page.locator("input[type='submit'], button[type='submit']").nth(1).click(timeout=1200)
                 enviar_clicked = True
-                LOG.info("Clicked Enviar via nth(1) submit")
-                print(f"{_ts()} [{_elapsed()}s] Enviar pressed (nth(1))")
+                LOG.info("Phase 1: Enviar pressed (nth(1))")
             except Exception:
                 pass
         if not enviar_clicked:
             raise RuntimeError("Could not find Enviar button on e.firma form")
     else:
-        print(f"{_ts()} [{_elapsed()}s] Enviar pressed")
+        LOG.info("Phase 1: [%.2fs] Enviar pressed", _elapsed())
     page.wait_for_load_state("domcontentloaded")
-    print(f"{_ts()} [{_elapsed()}s] waiting for SAT post-login page...")
+    LOG.info("Phase 1: [%.2fs] waiting for SAT post-login page...", _elapsed())
     post_login_timeout = 8000
     poll_ms = 150
     t_end = time.perf_counter() + (post_login_timeout / 1000.0)
@@ -678,7 +676,7 @@ def login_sat(page, efirma: dict, mapping: dict, base_url: str = SAT_PORTAL_URL)
     except Exception:
         pass
     page.wait_for_timeout(80)
-    print(f"{_ts()} [{_elapsed()}s] post-login page ready.")
+    LOG.info("Phase 1: [%.2fs] post-login page ready.", _elapsed())
     err = _check_sat_page_error(page)
     if err:
         LOG.error("SAT issue after login: %s", err)
@@ -704,7 +702,7 @@ DRAFT_BODY_TIMEOUT_MS = 800  # per-call timeout for body.inner_text so we can po
 
 def dismiss_draft_if_present(page: Page, mapping: dict) -> bool:
     """If 'Formulario no concluido' is shown (saved draft), click trash icon and confirm 'Sí' to delete; then we can continue to initial form. Returns True if a draft was dismissed."""
-    LOG.info("Checking for draft declaration (Formulario no concluido) after Presentar declaración, before filling initial form...")
+    LOG.info("Phase 2: Checking for draft declaration (Formulario no concluido) after Presentar declaración, before filling initial form...")
     page.wait_for_timeout(DRAFT_INITIAL_WAIT_MS)
     # Broader markers: SAT may show "Formulario no concluido", "Formularios no enviados", "borrador", "sin enviar", etc.
     draft_markers = (
@@ -746,11 +744,11 @@ def dismiss_draft_if_present(page: Page, mapping: dict) -> bool:
             pass
         page.wait_for_timeout(DRAFT_POLL_MS)
     if not draft_found:
-        LOG.info("No draft declaration detected; proceeding to configuration form.")
+        LOG.info("Phase 2: No draft declaration detected; proceeding to configuration form.")
         if last_body_snippet and LOG.isEnabledFor(logging.DEBUG):
             LOG.debug("Draft check: page text snippet (first 500 chars): %s", last_body_snippet[:500])
         return False
-    LOG.info("Formulario no concluido detected; dismissing saved draft (trash → Sí)")
+    LOG.info("Phase 2: Formulario no concluido detected; dismissing saved draft (trash → Sí)")
     try:
         # Click trash icon (first one next to a draft row)
         trash_clicked = False
@@ -826,7 +824,7 @@ def dismiss_draft_if_present(page: Page, mapping: dict) -> bool:
             except Exception:
                 pass
         if si_clicked:
-            LOG.info("Draft deleted (Sí confirmed); continuing to initial form")
+            LOG.info("Phase 2: Draft deleted (Sí confirmed); continuing to initial form")
         page.wait_for_timeout(300)
         return True
     except Exception as e:
@@ -2886,10 +2884,14 @@ def _fill_select_next_to_label(
     value_str: str,
     mapping: dict | None = None,
     initial_dropdown_key: str | None = None,
+    log_prefix: str = "",
 ) -> bool:
     """Locate dropdown (by label or mapping), press dropdown, scroll if needed, select option matching Excel value (fallback to select_option for native <select>)."""
     scope_type = "iframe" if isinstance(scope, Frame) else "page"
-    print(f"{_debug_ts()} [initial form DEBUG] Label={label_text!r} value={value_str!r} scope={scope_type}")
+    if log_prefix:
+        LOG.info("%sLabel=%r value=%r scope=%s", log_prefix, label_text, value_str, scope_type)
+    elif LOG.isEnabledFor(logging.DEBUG):
+        LOG.debug("Label=%r value=%r scope=%s", label_text, value_str, scope_type)
 
     _SCROLL_TIMEOUT_MS = 120
     _OPTION_CLICK_TIMEOUT_MS = 220
@@ -2932,7 +2934,10 @@ def _fill_select_next_to_label(
                     dropdown.select_option(label=value_str, timeout=350)
                     return True
         except Exception as e2:
-            print(f"{_debug_ts()} [initial form DEBUG]   Strategy 1 (press dropdown + select) failed: {e2}")
+            if log_prefix:
+                LOG.info("%s  Strategy 1 (press dropdown + select) failed: %s", log_prefix, e2)
+            elif LOG.isEnabledFor(logging.DEBUG):
+                LOG.debug("Strategy 1 (press dropdown + select) failed: %s", e2)
             return False
 
     def resolve_dropdown_from_label(label_el):
@@ -3004,16 +3009,28 @@ def _fill_select_next_to_label(
         if dropdown is not None:
             try:
                 el_id = dropdown.get_attribute("id") or "(no id)"
-                print(f"{_debug_ts()} [initial form DEBUG]   Strategy 1 (press dropdown, scroll, select option): dropdown id={el_id!r}")
+                if log_prefix:
+                    LOG.info("%s  Strategy 1 (press dropdown, scroll, select option): dropdown id=%r", log_prefix, el_id)
+                elif LOG.isEnabledFor(logging.DEBUG):
+                    LOG.debug("Strategy 1: dropdown id=%r", el_id)
             except Exception:
                 pass
             if do_press_dropdown_then_click_option(dropdown):
-                print(f"{_debug_ts()} [initial form DEBUG]   Strategy 1: filled OK")
+                if log_prefix:
+                    LOG.info("%s  Strategy 1: filled OK", log_prefix)
+                elif LOG.isEnabledFor(logging.DEBUG):
+                    LOG.debug("Strategy 1: filled OK")
                 return True
     except Exception as e:
-        print(f"{_debug_ts()} [initial form DEBUG]   Strategy 1 exception: {e}")
+        if log_prefix:
+            LOG.info("%s  Strategy 1 exception: %s", log_prefix, e)
+        elif LOG.isEnabledFor(logging.DEBUG):
+            LOG.debug("Strategy 1 exception: %s", e)
 
-    print(f"{_debug_ts()} [initial form DEBUG]   Result: NOT filled for label={label_text!r}")
+    if log_prefix:
+        LOG.info("%s  Result: NOT filled for label=%r", log_prefix, label_text)
+    elif LOG.isEnabledFor(logging.DEBUG):
+        LOG.debug("Result: NOT filled for label=%r", label_text)
     return False
 
 
@@ -3032,7 +3049,7 @@ def _get_declaration_form_scope(page: Page) -> Page | Frame:
         try:
             loc = frame.locator(probe)
             if loc.count() > 0:
-                LOG.info("Declaration form found in iframe")
+                LOG.info("Phase 2: Declaration form found in iframe")
                 return frame
         except Exception:
             continue
@@ -3053,54 +3070,54 @@ def fill_initial_form(page: Page, data: dict, mapping: dict) -> None:
         p = 1
     periodicidad_value = _SAT_PERIODICIDAD_VALUE.get(p, "M")
     periodo_str = f"{month:02d}" if month is not None else "N/A"
-    print(f"{_debug_ts()} [initial form DEBUG] Scope: {'iframe' if isinstance(scope, Frame) else 'main page'}. Will fill in order: Ejercicio={year}, Periodicidad={periodicidad} (value {periodicidad_value!r}), Periodo={periodo_str}, Tipo={tipo!r}")
+    LOG.info("Phase 2: Scope: %s. Will fill in order: Ejercicio=%s, Periodicidad=%s (value %r), Periodo=%s, Tipo=%r", 'iframe' if isinstance(scope, Frame) else 'main page', year, periodicidad, periodicidad_value, periodo_str, tipo)
     # Wait for at least one select (Ejercicio) to be visible.
     try:
         loc = scope.locator("select")
         loc.first.wait_for(state="visible", timeout=12000)
         n_selects = loc.count()
-        print(f"{_debug_ts()} [initial form DEBUG] Selects in scope: {n_selects}")
+        LOG.info("Phase 2: Selects in scope: %s", n_selects)
     except Exception as e:
-        print(f"{_debug_ts()} [initial form DEBUG] Wait for select failed: {e}")
+        LOG.info("Phase 2: Wait for select failed: %s", e)
     page_for_wait.wait_for_timeout(60)
     # Order per updated SAT form: Ejercicio → Periodicidad → Periodo (appears after Periodicidad) → Tipo de declaración (appears after Periodo).
     if year is not None:
-        print(f"{_debug_ts()} [initial form DEBUG] --- Filling Ejercicio ---")
-        ok = _fill_select_next_to_label(scope, page_for_wait, "Ejercicio", str(year), mapping=mapping, initial_dropdown_key="initial_ejercicio")
+        LOG.info("Phase 2: --- Filling Ejercicio ---")
+        ok = _fill_select_next_to_label(scope, page_for_wait, "Ejercicio", str(year), mapping=mapping, initial_dropdown_key="initial_ejercicio", log_prefix="Phase 2: ")
         if not ok and mapping.get("initial_ejercicio"):
             sel_list = mapping["initial_ejercicio"] if isinstance(mapping["initial_ejercicio"], list) else [mapping["initial_ejercicio"]]
             ok = _fill_select_by_mapping(scope, page_for_wait, sel_list, str(year))
             if ok:
-                print(f"{_debug_ts()} [initial form DEBUG] Ejercicio filled via mapping selectors")
-        print(f"{_debug_ts()} [initial form] Ejercicio: {year}" + (" (filled)" if ok else " (NOT filled — check selectors)"))
+                LOG.info("Phase 2: Ejercicio filled via mapping selectors")
+        LOG.info("Phase 2: Ejercicio: %s%s", year, " (filled)" if ok else " (NOT filled — check selectors)")
         page_for_wait.wait_for_timeout(80)
-    print(f"{_debug_ts()} [initial form DEBUG] --- Filling Periodicidad ---")
-    ok = _fill_select_next_to_label(scope, page_for_wait, "Periodicidad", periodicidad_value, mapping=mapping, initial_dropdown_key="initial_periodicidad")
-    print(f"{_debug_ts()} [initial form] Periodicidad: {periodicidad}" + (" (filled)" if ok else " (NOT filled — check selectors)"))
+    LOG.info("Phase 2: --- Filling Periodicidad ---")
+    ok = _fill_select_next_to_label(scope, page_for_wait, "Periodicidad", periodicidad_value, mapping=mapping, initial_dropdown_key="initial_periodicidad", log_prefix="Phase 2: ")
+    LOG.info("Phase 2: Periodicidad: %s%s", periodicidad, " (filled)" if ok else " (NOT filled — check selectors)")
     page_for_wait.wait_for_timeout(250)
     # Periodo dropdown appears after Periodicidad (Enero–Diciembre; SAT may show only YTD months). pstcdypisr uses label "Periodo" (no accent).
     if month is not None:
-        print(f"{_debug_ts()} [initial form DEBUG] --- Filling Periodo ---")
+        LOG.info("Phase 2: --- Filling Periodo ---")
         periodo_value = _SAT_PERIODO_LABEL.get(month, "Enero")
-        ok = _fill_select_next_to_label(scope, page_for_wait, "Periodo", periodo_value, mapping=mapping, initial_dropdown_key="initial_periodo")
+        ok = _fill_select_next_to_label(scope, page_for_wait, "Periodo", periodo_value, mapping=mapping, initial_dropdown_key="initial_periodo", log_prefix="Phase 2: ")
         if not ok:
-            ok = _fill_select_next_to_label(scope, page_for_wait, "Período", periodo_value, mapping=mapping, initial_dropdown_key="initial_periodo")
+            ok = _fill_select_next_to_label(scope, page_for_wait, "Período", periodo_value, mapping=mapping, initial_dropdown_key="initial_periodo", log_prefix="Phase 2: ")
         if not ok and mapping.get("initial_periodo"):
             sel_list = mapping["initial_periodo"] if isinstance(mapping["initial_periodo"], list) else [mapping["initial_periodo"]]
             ok = _fill_select_by_mapping(scope, page_for_wait, sel_list, periodo_value)
             if ok:
-                print(f"{_debug_ts()} [initial form DEBUG] Periodo filled via mapping selectors")
-        print(f"{_debug_ts()} [initial form] Periodo: {month:02d} ({periodo_value})" + (" (filled)" if ok else " (NOT filled — check selectors)"))
+                LOG.info("Phase 2: Periodo filled via mapping selectors")
+        LOG.info("Phase 2: Periodo: %02d (%s)%s", month, periodo_value, " (filled)" if ok else " (NOT filled — check selectors)")
         page_for_wait.wait_for_timeout(200)
     # Tipo de declaración appears after Periodo (Normal / Normal por Corrección Fiscal). pstcdypisr uses label "Tipo de declaración" (lowercase d).
-    print(f"{_debug_ts()} [initial form DEBUG] --- Filling Tipo de Declaración ---")
-    ok = _fill_select_next_to_label(scope, page_for_wait, "Tipo de declaración", str(tipo), mapping=mapping, initial_dropdown_key="initial_tipo_declaracion")
+    LOG.info("Phase 2: --- Filling Tipo de Declaración ---")
+    ok = _fill_select_next_to_label(scope, page_for_wait, "Tipo de declaración", str(tipo), mapping=mapping, initial_dropdown_key="initial_tipo_declaracion", log_prefix="Phase 2: ")
     if not ok:
-        ok = _fill_select_next_to_label(scope, page_for_wait, "Tipo de Declaración", str(tipo), mapping=mapping, initial_dropdown_key="initial_tipo_declaracion")
+        ok = _fill_select_next_to_label(scope, page_for_wait, "Tipo de Declaración", str(tipo), mapping=mapping, initial_dropdown_key="initial_tipo_declaracion", log_prefix="Phase 2: ")
     if not ok and mapping.get("initial_tipo_declaracion"):
         sel_list = mapping["initial_tipo_declaracion"] if isinstance(mapping["initial_tipo_declaracion"], list) else [mapping["initial_tipo_declaracion"]]
         ok = _fill_select_by_mapping(scope, page_for_wait, sel_list, str(tipo))
-    print(f"{_debug_ts()} [initial form] Tipo de Declaración: {tipo}" + (" (filled)" if ok else " (NOT filled — check selectors)"))
+    LOG.info("Phase 2: Tipo de Declaración: %s%s", tipo, " (filled)" if ok else " (NOT filled — check selectors)")
     page_for_wait.wait_for_timeout(40)
 
 
@@ -3359,7 +3376,7 @@ def run(
                     _run_context = {"page": page, "mapping": mapping}
                     try:
                         login_sat(page, efirma, mapping, base_url)
-                        LOG.info("Logged in to SAT")
+                        LOG.info("Phase 1: Logged in to SAT")
                         print()
                         LOG.info("\n")
                         if not open_configuration_form(page, mapping):
@@ -3509,7 +3526,7 @@ def run(
                 _run_context = {"page": page, "mapping": mapping}
                 try:
                     login_sat(page, efirma, mapping, base_url)
-                    LOG.info("Logged in to SAT")
+                    LOG.info("Phase 1: Logged in to SAT")
                     print()
                     LOG.info("\n")
                     if not open_configuration_form(page, mapping):
