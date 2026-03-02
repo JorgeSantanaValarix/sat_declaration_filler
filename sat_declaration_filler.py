@@ -1155,6 +1155,28 @@ def _read_sat_total_ingresos_cobrados(page: Page, scope: Page, mapping: dict | N
         return 0.0
 
 
+def _click_capturar_iva_acreditable(page_or_scope) -> bool:
+    """Click the CAPTURAR next to '*IVA acreditable del periodo' using ISR logic: iterate all CAPTURAR, find row that contains the label text, click that one. Works when form uses div rows (no tr)."""
+    try:
+        for cap in page_or_scope.locator("a, button").filter(has_text=re.compile(r"CAPTURAR", re.I)).all():
+            try:
+                row = cap.locator("xpath=ancestor::tr[1] | ancestor::div[contains(@class,'row')][1]").first
+                if row.count() == 0:
+                    continue
+                row_text = (row.inner_text(timeout=500) or "").lower()
+                if "iva acreditable del periodo" in row_text or "acreditable del periodo" in row_text:
+                    if "acreditable por actividades" in row_text and "acreditable del periodo" not in row_text:
+                        continue
+                    cap.scroll_into_view_if_needed(timeout=500)
+                    cap.click()
+                    return True
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return False
+
+
 def _click_capturar_next_to_label(page_or_scope: Page | Frame, label_substring: str, *, occurrence: int = 0) -> bool:
     """Find the label containing label_substring (use occurrence=1 for second match, e.g. *Ingresos a disminuir section), then click the CAPTURAR in the same row only (not the first CAPTURAR in a large container). Returns True if clicked."""
     try:
@@ -1178,10 +1200,10 @@ def _click_capturar_next_to_label(page_or_scope: Page | Frame, label_substring: 
             if n == 1:
                 capturar = caps.first
             else:
-                # Multiple CAPTURARs: pick the one in the same row as label_el (row contains label and only one CAPTURAR)
+                # Multiple CAPTURARs: pick the one in the same row as label_el (ISR: use tr or div.row)
                 for j in range(n):
                     cap = caps.nth(j)
-                    row = cap.locator("xpath=ancestor::tr[1]").first
+                    row = cap.locator("xpath=ancestor::tr[1] | ancestor::div[contains(@class,'row')][1]").first
                     if row.count() == 0:
                         continue
                     row_text = row.inner_text(timeout=200) or ""
@@ -1255,6 +1277,17 @@ def _fill_input_next_to_label(
             return _values_match(_get_val(), val)
         except Exception:
             return False
+
+    # Strategy 0: get_by_label with exact=False (same as ISR _try_fill when selector is "label=...")
+    try:
+        control = page_or_scope.get_by_label(label_substring, exact=False).first
+        control.wait_for(state="visible", timeout=800)
+        tag = control.evaluate("el => (el && el.tagName) ? el.tagName.toLowerCase() : ''")
+        if tag in ("input", "textarea", ""):
+            if not control.get_attribute("disabled") and _set_value(control, value_str):
+                return True
+    except Exception:
+        pass
 
     try:
         loc = page_or_scope.get_by_text(re.compile(re.escape(label_substring), re.I))
@@ -2928,6 +2961,51 @@ def fill_iva_simplificado(page: Page, mapping: dict, data: dict) -> None:
     LOG.info("")
 
 
+def _fill_iva_input_by_position(
+    page_for_wait: Page, scope, step_1based: int, total_fields: int, value_str: str
+) -> bool:
+    """Fallback: fill the nth visible editable input in scope (1-based). Used when label-based locate fails."""
+    def _set(inp, val: str) -> bool:
+        try:
+            cur = (inp.input_value() or inp.get_attribute("value") or "").strip()
+            if cur == val or (cur.replace(",", "") == val.replace(",", "")):
+                return True
+            inp.scroll_into_view_if_needed(timeout=500)
+            inp.click()
+            page_for_wait.wait_for_timeout(80)
+            inp.fill("")
+            inp.fill(val)
+            page_for_wait.wait_for_timeout(150)
+            return (inp.input_value() or "").strip() == val or (inp.input_value() or "").replace(",", "") == val.replace(",", "")
+        except Exception:
+            return False
+
+    try:
+        inputs = scope.locator(
+            "input[type='text'], input[type='number'], input:not([type='submit']):not([type='button']):not([type='hidden'])"
+        )
+        idx = step_1based - 1
+        n = 0
+        for i in range(min(inputs.count(), 20)):
+            inp = inputs.nth(i)
+            try:
+                if not inp.is_visible(timeout=200):
+                    continue
+                if inp.get_attribute("disabled") or inp.get_attribute("readonly"):
+                    continue
+                if n == idx:
+                    if _set(inp, value_str):
+                        LOG.info("IVA Determinación: filled input by position (index %s)", step_1based)
+                        return True
+                    return False
+                n += 1
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return False
+
+
 def fill_iva_simplificado_determinacion(page: Page, mapping: dict, data: dict) -> None:
     """
     Fill IVA simplificado de confianza Determinación form (run after navigating from administración to IVA).
@@ -2949,6 +3027,21 @@ def fill_iva_simplificado_determinacion(page: Page, mapping: dict, data: dict) -
         LOG.debug("IVA Determinación: IVA form title wait skipped or timed out")
     page.wait_for_timeout(400)
 
+    # Scope to Determinación tab content to avoid matching hidden/duplicate elements from other tabs
+    iva_scope = scope
+    try:
+        for candidate in [
+            page.get_by_role("tabpanel").filter(has=page.get_by_text("Actividades gravadas a la tasa del 16%")).first,
+            page.locator("[role='tabpanel']").filter(has=page.get_by_text("Actividades gravadas", exact=False)).first,
+            page.locator(".tab-pane, [class*='tabpanel'], [class*='tab-content']").filter(has=page.get_by_text("Actividades gravadas", exact=False)).first,
+        ]:
+            if candidate.count() > 0 and candidate.first.is_visible(timeout=500):
+                iva_scope = candidate.first
+                LOG.info("IVA Determinación: using tabpanel scope for field lookup")
+                break
+    except Exception:
+        pass
+
     # Excel label -> (form label substring, optional)
     main_fields = [
         ("Actividades gravadas a la tasa del 16%", "Actividades gravadas a la tasa del 16%"),
@@ -2961,18 +3054,29 @@ def fill_iva_simplificado_determinacion(page: Page, mapping: dict, data: dict) -
         raw = label_map.get(excel_label)
         val = _parse_currency(raw) if raw is not None else 0.0
         value_str = str(int(round(val))) if val is not None else "0"
+        if form_label == "IVA retenido" and val is not None and val < 0:
+            value_str = str(abs(int(round(val))))
         LOG.info("IVA Determinación: step %s/5 — filling %r (excel %r) with value %s", step, form_label, excel_label, value_str)
-        if _fill_input_next_to_label(scope, page, form_label, value_str):
+        filled = _try_fill(iva_scope, page, mapping, form_label, value_str)
+        if not filled:
+            filled = _fill_input_next_to_label(iva_scope, page, form_label, value_str)
+        if not filled:
+            filled = _fill_iva_input_by_position(page, iva_scope, step, 5, value_str)
+        if filled:
             LOG.info("IVA Determinación: step %s/5 — filled %r", step, form_label)
         else:
             LOG.warning("IVA Determinación: step %s/5 — could not fill %r", step, form_label)
         page.wait_for_timeout(200)
 
-    # Click CAPTURAR next to *IVA acreditable del periodo
+    # Click CAPTURAR next to *IVA acreditable del periodo (reuse ISR logic: iterate CAPTURARs, match row by label text)
     LOG.info("IVA Determinación: step — clicking CAPTURAR next to '*IVA acreditable del periodo'")
-    capturar_ok = _click_capturar_next_to_label(scope, "IVA acreditable del periodo", occurrence=0)
+    capturar_ok = _click_capturar_iva_acreditable(iva_scope)
     if not capturar_ok:
-        capturar_ok = _click_capturar_next_to_label(scope, "*IVA acreditable del periodo", occurrence=0)
+        capturar_ok = _click_capturar_next_to_label(iva_scope, "IVA acreditable del periodo", occurrence=0)
+    if not capturar_ok:
+        capturar_ok = _click_capturar_next_to_label(iva_scope, "*IVA acreditable del periodo", occurrence=0)
+    if not capturar_ok:
+        capturar_ok = _click_capturar_iva_acreditable(page)
     if not capturar_ok:
         LOG.warning("IVA Determinación: could not click CAPTURAR for IVA acreditable del periodo")
     else:
