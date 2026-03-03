@@ -102,37 +102,6 @@ Workbook for tests can be set in config as **test_workbook_path** (or **test.wor
 
 **Test config:** Set **test_cer_path**, **test_key_path**, **test_password** (optional: **test_rfc**) in `config.json`. For **--test-initial-form** use **test_year**, **test_month**, **test_periodicidad**. For **--test-full**, **--test-phase3**, **--test-iva** set **test_workbook_path** or pass **-w**.
 
-(Test phase 2 and Test full details are in the table above.)
-
-To test login plus filling the initial form (Ejercicio, Periodicidad, Período, Tipo de declaración) without using an Excel file:
-
-1. In `config.json`, set **test_year**, **test_month**, **test_periodicidad** (e.g. 2026, 1, 1). Optional; defaults: current year, month 1, periodicidad 1.
-2. Run:
-
-```bash
-python sat_declaration_filler.py --test-initial-form
-```
-
-The script will log in (using test_cer_path / test_key_path / test_password), navigate to “Declaración Provisional o Definitiva”, fill the initial form from config, and keep the browser open 15 seconds. No workbook or DB is required.
-
-**Test full (up to initial form only; Excel + config, no DB)**
-
-To test login and the initial “Declaración Provisional o Definitiva” form only (no ISR/IVA fill, no totals check, no send): e.firma from config, initial form from Excel (year/month from filename `YYYYMM_...`, periodicidad from Impuestos sheet).
-
-Set **test_workbook_path** in `config.json` to the full path of your Excel workpaper. Then run:
-
-```bash
-python sat_declaration_filler.py --test-full
-```
-
-Or pass the workbook on the command line (overrides config):
-
-```bash
-python sat_declaration_filler.py --test-full --workbook "C:\path\to\202601_RFC_Hoja de Trabajo.xlsx"
-```
-
-The script will login, navigate to the declaration, fill the initial form (Ejercicio, Periodicidad, Período, Tipo) from the Excel, then stop and leave the browser open 15 seconds for inspection.
-
 - **Exit code 0** — success (normal run: declaration sent; test: step completed).
 - **Exit code 1** — error or totals mismatch; check console output and `sat_declaration_filler.log`.
 
@@ -247,6 +216,7 @@ The script will then look for the .cer and .key at `C:\Ketan\Fiel\<CompanyId>\<B
 - `--branch-id`, `-b` — Branch ID for e.firma (required).
 - `--config` — Path to `config.json` (default: same folder as script).
 - `--mapping` — Path to `form_field_mapping.json` (default: same folder as script).
+- **Test flags** (use e.firma from config; no DB): `--test-login`, `--test-initial-form`, `--test-full`, `--test-phase3`, `--test-iva`. See **Test modes** above.
 
 The script:
 
