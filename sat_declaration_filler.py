@@ -3240,6 +3240,49 @@ def fill_iva_simplificado_determinacion(page: Page, mapping: dict, data: dict) -
     if pago_clicked:
         LOG.info("IVA: Pago tab clicked")
         page.wait_for_timeout(800)
+        page.wait_for_load_state("domcontentloaded", timeout=5000)
+        page.wait_for_timeout(500)
+        LOG.info("IVA Pago: selecting *¿Tienes compensaciones por aplicar? → No (reuse ISR dropdown logic)")
+        comp_ok = _fill_pago_custom_dropdown(page, "compensaciones por aplicar", "No")
+        if comp_ok:
+            LOG.info("IVA Pago: dropdown *¿Tienes compensaciones por aplicar? set to No")
+        else:
+            LOG.warning("IVA Pago: could not set *¿Tienes compensaciones por aplicar? to No")
+        page.wait_for_timeout(120)
+        LOG.info("IVA Pago: selecting *¿Tienes estímulos por aplicar? → No (reuse ISR dropdown logic)")
+        estim_ok = _fill_pago_custom_dropdown(page, "estímulos por aplicar", "No")
+        if estim_ok:
+            LOG.info("IVA Pago: dropdown *¿Tienes estímulos por aplicar? set to No")
+        else:
+            LOG.warning("IVA Pago: could not set *¿Tienes estímulos por aplicar? to No")
+        page.wait_for_timeout(200)
+        LOG.info("IVA Pago: clicking GUARDAR")
+        guardar_pago_ok = False
+        for loc in [
+            page.get_by_role("button", name=re.compile(r"GUARDAR", re.I)),
+            page.locator("input[type='submit'][value*='GUARDAR'], input[type='button'][value*='GUARDAR']"),
+            page.get_by_text("GUARDAR", exact=True),
+        ]:
+            try:
+                first_btn = loc.first
+                first_btn.wait_for(state="visible", timeout=4000)
+                if first_btn.locator("xpath=ancestor::*[contains(@class,'modal') or @role='dialog']").count() > 0:
+                    continue
+                if first_btn.get_attribute("disabled"):
+                    continue
+                first_btn.click(timeout=3000)
+                guardar_pago_ok = True
+                LOG.info("IVA Pago: GUARDAR clicked")
+                break
+            except Exception:
+                continue
+        if guardar_pago_ok:
+            page.wait_for_timeout(1000)
+            page.wait_for_load_state("domcontentloaded", timeout=5000)
+            page.wait_for_timeout(500)
+            LOG.info("IVA Pago: load complete after GUARDAR; IVA simplificado flow complete (then logout/end script)")
+        else:
+            LOG.warning("IVA Pago: could not click GUARDAR")
     else:
         LOG.warning("IVA: could not click Pago tab")
     LOG.info("===== IVA simplificado de confianza: Determinación form complete =====")
