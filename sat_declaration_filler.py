@@ -388,6 +388,127 @@ def load_mapping(path: str | None) -> dict:
     return {k: v for k, v in data.items() if not k.startswith("_comment") and isinstance(v, list)}
 
 
+# Default SAT UI labels/patterns (config.json sat_ui). When SAT changes wording, update config; code merges with these.
+DEFAULT_SAT_UI = {
+    "isr_ingresos_copropiedad": "*¿Los ingresos fueron obtenidos a través de copropiedad?",
+    "btn_administracion_declaracion": r"ADMINISTRACIÓN\s+DE\s+LA\s+DECLARACIÓN",
+    "select_obligation_isr": r"ISR\s+simplificado\s+de\s+confianza\.\s*Personas\s+físicas",
+    "select_obligation_iva": r"IVA\s+simplificado\s+de\s+confianza",
+    "total_ingresos_cobrados": "Total de ingresos efectivamente cobrados",
+    "capturar_button": "CAPTURAR",
+    "isr_section_descuentos": "Descuentos",
+    "isr_section_ingresos_disminuir": "Ingresos a disminuir",
+    "isr_section_ingresos_adicionales": "Ingresos adicionales",
+    "isr_section_total_percibidos": "Total de ingresos percibidos",
+    "iva_section_acreditable": "IVA acreditable del periodo",
+    "popup_cerrar": "CERRAR",
+    "loading_text": "Cargando información",
+    "formularios_no_enviados": "Formularios no enviados",
+    "iniciar_nueva_declaracion": r"INICIAR\s*.*\s*NUEVA\s+DECLARACIÓN",
+    "eliminar_confirm": "¿Deseas eliminar esta declaración?",
+    "eliminar_si": "sí",
+    "login_enviar": "Enviar",
+    "login_e_firma": r"e\.firma",
+    "nav_presentar_declaracion": "Presentar declaración",
+    "nav_nuevo_portal": "Nuevo Portal de pagos provisionales",
+    "nav_iniciar_nueva": "Iniciar una nueva declaración",
+    "btn_siguiente": "SIGUIENTE",
+    "initial_ejercicio_label": "Ejercicio",
+    "initial_periodicidad_label": "Periodicidad",
+    "initial_periodo_label": "Período",
+    "initial_tipo_label": "Tipo de Declaración",
+    "ver_detalle_button": "VER DETALLE",
+    "isr_retenido_row_label": "ISR retenido por personas morales",
+    "isr_retenido_no_acreditable_label": "ISR retenido no acreditable",
+    "isr_retenido_excel_label": "ISR retenido",
+    "determinacion_tab_name": "Determinación",
+    "pago_tab_name": "Pago",
+    "isr_pago_compensaciones_question": "compensaciones por aplicar",
+    "isr_pago_estimulos_question": "estímulos por aplicar",
+    "btn_guardar": "GUARDAR",
+}
+DEFAULT_ISR_DETERMINACION_LABELS = [
+    "Ingresos nominales facturados",
+    "Total de ingresos acumulados",
+    "Base gravable del pago provisional",
+    "Impuesto del periodo",
+    "Total ISR retenido del periodo",
+    "ISR a cargo",
+]
+DEFAULT_DECLARATION_FLOW = ["isr", "iva"]
+
+DEFAULT_IVA_DETERMINACION_FIELDS = [
+    ("Actividades gravadas a la tasa del 16%", "Actividades gravadas a la tasa del 16%"),
+    ("Actividades gravadas a la tasa del 0% otros", "Actividades gravadas a la tasa del 0%"),
+    ("Actividades exentas", "Actividades exentas"),
+    ("Actividades no objeto de impuesto", "Actividades no objeto del impuesto"),
+    ("IVA retenido a favor", "IVA retenido"),
+]
+DEFAULT_IVA_PAGO_LABELS = [
+    "Actividades gravadas a la tasa del 16%",
+    "Actividades gravadas a la tasa del 8%",
+    "Actividades gravadas a la tasa del 0% otros",
+    "Actividades exentas",
+    "Actividades no objeto de impuesto",
+    "IVA a cargo a la tasa del 16% y 8%",
+    "Total IVA Trasladado",
+    "IVA retenido a favor",
+    "IVA acreditable del periodo",
+    "Cantidad a cargo",
+    "IVA a cargo",
+    "IVA a favor",
+]
+
+
+def get_sat_ui(config: dict) -> dict:
+    """Return merged sat_ui from config with defaults. Safe when config has no sat_ui."""
+    ui = dict(DEFAULT_SAT_UI)
+    ui.update(config.get("sat_ui") or {})
+    return ui
+
+
+def get_isr_determinacion_labels(config: dict) -> list[str]:
+    """Return isr_determinacion_labels from config or default list."""
+    labels = config.get("isr_determinacion_labels")
+    return list(labels) if labels else list(DEFAULT_ISR_DETERMINACION_LABELS)
+
+
+def get_declaration_flow(config: dict) -> list[str]:
+    """Return declaration_flow from config or default ['isr', 'iva']."""
+    flow = config.get("declaration_flow")
+    return list(flow) if flow else list(DEFAULT_DECLARATION_FLOW)
+
+
+def get_iva_determinacion_fields(config: dict) -> list[tuple[str, str]]:
+    """Return iva_determinacion_fields from config or default (excel_label, form_label) tuples."""
+    raw = config.get("iva_determinacion_fields")
+    if not raw:
+        return list(DEFAULT_IVA_DETERMINACION_FIELDS)
+    out = []
+    for item in raw:
+        if isinstance(item, dict):
+            ex = item.get("excel_label", "")
+            fm = item.get("form_label", ex)
+            out.append((ex, fm))
+        else:
+            out.append((item, item))
+    return out if out else list(DEFAULT_IVA_DETERMINACION_FIELDS)
+
+
+def get_iva_pago_labels(config: dict) -> list[str]:
+    """Return iva_pago_labels from config or default list."""
+    labels = config.get("iva_pago_labels")
+    return list(labels) if labels else list(DEFAULT_IVA_PAGO_LABELS)
+
+
+def _ui_pattern(sat_ui: dict, key: str, *, literal: bool = False) -> re.Pattern:
+    """Compile sat_ui key as case-insensitive regex. If literal=True, escape special chars."""
+    raw = sat_ui.get(key) or DEFAULT_SAT_UI.get(key) or ""
+    if literal:
+        raw = re.escape(raw)
+    return re.compile(raw, re.I)
+
+
 def setup_logging(log_file: str | None) -> None:
     """Print to console and append to log file."""
     if log_file is None:
@@ -553,8 +674,9 @@ def _try_click(page, mapping: dict, key: str) -> bool:
     return False
 
 
-def login_sat(page, efirma: dict, mapping: dict, base_url: str = SAT_PORTAL_URL) -> None:
+def login_sat(page, efirma: dict, mapping: dict, base_url: str = SAT_PORTAL_URL, sat_ui: dict | None = None) -> None:
     """Open SAT portal, click e.firma, fill .cer, .key, password, Enviar."""
+    sat_ui = sat_ui or DEFAULT_SAT_UI
     t0 = time.perf_counter()
 
     def _ts() -> str:
@@ -614,11 +736,12 @@ def login_sat(page, efirma: dict, mapping: dict, base_url: str = SAT_PORTAL_URL)
     page.wait_for_timeout(50)
     LOG.info("Phase 1: [%.2fs] pressing Enviar", _elapsed())
     # Click Enviar: try mapping first, then fallbacks (SAT markup varies; Enviar can be button or input).
+    enviar_pat = _ui_pattern(sat_ui, "login_enviar")
     if not _try_click(page, mapping, "_login_enviar_button"):
         enviar_clicked = False
         for try_fn in [
-            lambda: page.get_by_role("button", name=re.compile(r"Enviar", re.I)).first.click(timeout=1200),
-            lambda: page.locator("button").filter(has_text=re.compile(r"Enviar", re.I)).first.click(timeout=1200),
+            lambda: page.get_by_role("button", name=enviar_pat).first.click(timeout=1200),
+            lambda: page.locator("button").filter(has_text=enviar_pat).first.click(timeout=1200),
             lambda: page.locator("input[type='submit'][value='Enviar']").first.click(timeout=1200),
             lambda: page.locator("input[type='submit'][value*='Enviar']").first.click(timeout=1200),
         ]:
@@ -700,8 +823,9 @@ DRAFT_INITIAL_WAIT_MS = 400  # brief wait for navigation/content to start render
 DRAFT_BODY_TIMEOUT_MS = 800  # per-call timeout for body.inner_text so we can poll multiple times
 
 
-def dismiss_draft_if_present(page: Page, mapping: dict) -> bool:
+def dismiss_draft_if_present(page: Page, mapping: dict, sat_ui: dict | None = None) -> bool:
     """If 'Formulario no concluido' is shown (saved draft), click trash icon and confirm 'Sí' to delete; then we can continue to initial form. Returns True if a draft was dismissed."""
+    sat_ui = sat_ui or DEFAULT_SAT_UI
     LOG.info("Phase 2: Checking for draft declaration (Formulario no concluido) after Presentar declaración, before filling initial form...")
     page.wait_for_timeout(DRAFT_INITIAL_WAIT_MS)
     # Broader markers: SAT may show "Formulario no concluido", "Formularios no enviados", "borrador", "sin enviar", etc.
@@ -778,15 +902,17 @@ def dismiss_draft_if_present(page: Page, mapping: dict) -> bool:
                 except Exception:
                     continue
         if not trash_clicked:
+            form_no_env = sat_ui.get("formularios_no_enviados") or "Formularios no enviados"
+            iniciar_pat = _ui_pattern(sat_ui, "iniciar_nueva_declaracion")
             try:
-                card = page.get_by_text("Formularios no enviados", exact=False).locator("..").locator("..").locator("..").first
-                trash = card.locator("button, a").filter(has_not=page.get_by_text(re.compile(r"INICIAR.*NUEVA DECLARACIÓN", re.I))).first
+                card = page.get_by_text(form_no_env, exact=False).locator("..").locator("..").locator("..").first
+                trash = card.locator("button, a").filter(has_not=page.get_by_text(iniciar_pat)).first
                 trash.wait_for(state="visible", timeout=1000)
                 trash.click()
                 trash_clicked = True
             except Exception:
                 try:
-                    row = page.get_by_text("Formularios no enviados", exact=False).locator("..").locator("..")
+                    row = page.get_by_text(form_no_env, exact=False).locator("..").locator("..")
                     trash = row.locator("button, a").filter(has=page.locator("svg, [class*='trash'], [class*='eliminar']")).first
                     trash.wait_for(state="visible", timeout=1000)
                     trash.click()
@@ -797,8 +923,10 @@ def dismiss_draft_if_present(page: Page, mapping: dict) -> bool:
             LOG.warning("Could not find/click draft trash icon")
             return False
         page.wait_for_timeout(200)
+        eliminar_confirm = sat_ui.get("eliminar_confirm") or "¿Deseas eliminar esta declaración?"
+        eliminar_si = sat_ui.get("eliminar_si") or "sí"
         try:
-            page.get_by_text("¿Deseas eliminar esta declaración?", exact=False).wait_for(state="visible", timeout=1000)
+            page.get_by_text(eliminar_confirm, exact=False).wait_for(state="visible", timeout=1000)
         except Exception:
             LOG.warning("Delete confirmation popup did not appear")
             return True
@@ -812,14 +940,15 @@ def dismiss_draft_if_present(page: Page, mapping: dict) -> bool:
                 except Exception:
                     continue
         if not si_clicked:
+            si_pat = _ui_pattern(sat_ui, "eliminar_si", literal=True)
             try:
-                page.get_by_role("button", name=re.compile(r"^sí$", re.I)).first.click(timeout=1000)
+                page.get_by_role("button", name=si_pat).first.click(timeout=1000)
                 si_clicked = True
             except Exception:
                 pass
         if not si_clicked:
             try:
-                page.get_by_text("sí", exact=True).first.click(timeout=1000)
+                page.get_by_text(eliminar_si, exact=True).first.click(timeout=1000)
                 si_clicked = True
             except Exception:
                 pass
@@ -844,15 +973,17 @@ def open_configuration_form(page: Page, mapping: dict) -> bool:
     return ok
 
 
-def transition_initial_to_phase3(page: Page, mapping: dict) -> bool:
+def transition_initial_to_phase3(page: Page, mapping: dict, sat_ui: dict | None = None) -> bool:
     """After initial form: click SIGUIENTE, wait for loading to finish, then click CERRAR on the pre-fill info pop-up. Returns True if the full sequence succeeded."""
+    sat_ui = sat_ui or DEFAULT_SAT_UI
     if not _try_click(page, mapping, "_btn_siguiente"):
         LOG.warning("Could not click SIGUIENTE after initial form")
         return False
     page.wait_for_timeout(500)
-    # Wait for "Cargando información" to disappear (variable time)
+    # Wait for loading text to disappear (variable time)
+    loading_text = sat_ui.get("loading_text") or "Cargando información"
     try:
-        loading = page.get_by_text("Cargando información", exact=False)
+        loading = page.get_by_text(loading_text, exact=False)
         for _ in range(PHASE3_LOADING_MAX_WAIT_SEC * 2):  # poll every 500ms
             if loading.count() == 0:
                 break
@@ -866,7 +997,8 @@ def transition_initial_to_phase3(page: Page, mapping: dict) -> bool:
         pass
     page.wait_for_timeout(300)
     # Wait for pre-fill pop-up to appear (CERRAR button can take several seconds after loading ends)
-    cerrar_btn = page.get_by_role("button", name=re.compile(r"CERRAR", re.I)).first
+    cerrar_pat = _ui_pattern(sat_ui, "popup_cerrar")
+    cerrar_btn = page.get_by_role("button", name=cerrar_pat).first
     try:
         cerrar_btn.wait_for(state="visible", timeout=PHASE3_POPUP_WAIT_FOR_CERRAR_SEC * 1000)
         LOG.info("Pre-fill pop-up visible, clicking CERRAR")
@@ -892,7 +1024,7 @@ def transition_initial_to_phase3(page: Page, mapping: dict) -> bool:
                 continue
     if not cerrar_ok:
         try:
-            page.get_by_role("button", name=re.compile(r"CERRAR", re.I)).first.click(timeout=PHASE3_POPUP_CERRAR_CLICK_MS)
+            page.get_by_role("button", name=cerrar_pat).first.click(timeout=PHASE3_POPUP_CERRAR_CLICK_MS)
             cerrar_ok = True
             LOG.info("Clicked CERRAR on pre-fill pop-up (fallback)")
         except Exception as e:
@@ -910,15 +1042,17 @@ def open_obligation_isr(page, mapping: dict) -> bool:
     return ok
 
 
-def click_administracion_declaracion(page: Page, mapping: dict) -> bool:
+def click_administracion_declaracion(page: Page, mapping: dict, sat_ui: dict | None = None) -> bool:
     """Click the 'ADMINISTRACIÓN DE LA DECLARACIÓN' button (top right on ISR/IVA form) to return to the administración menu. Returns True if clicked."""
+    sat_ui = sat_ui or DEFAULT_SAT_UI
     LOG.info("IVA: step — clicking 'ADMINISTRACIÓN DE LA DECLARACIÓN' to return to administración menu")
     ok = _try_click(page, mapping, "_btn_administracion_declaracion")
     if ok:
         LOG.info("IVA: clicked 'ADMINISTRACIÓN DE LA DECLARACIÓN' (mapping)")
         page.wait_for_timeout(500)
         return True
-    for btn in page.get_by_role("button", name=re.compile(r"ADMINISTRACIÓN\s+DE\s+LA\s+DECLARACIÓN", re.I)).all():
+    admin_pat = _ui_pattern(sat_ui, "btn_administracion_declaracion")
+    for btn in page.get_by_role("button", name=admin_pat).all():
         try:
             if btn.is_visible():
                 btn.click(timeout=2000)
@@ -927,7 +1061,7 @@ def click_administracion_declaracion(page: Page, mapping: dict) -> bool:
                 return True
         except Exception:
             continue
-    for elem in page.get_by_text(re.compile(r"ADMINISTRACIÓN\s+DE\s+LA\s+DECLARACIÓN", re.I)).all():
+    for elem in page.get_by_text(admin_pat).all():
         try:
             if elem.is_visible() and elem.locator("xpath=ancestor::*[contains(@class,'modal') or @role='dialog']").count() == 0:
                 elem.click(timeout=2000)
@@ -940,15 +1074,17 @@ def click_administracion_declaracion(page: Page, mapping: dict) -> bool:
     return False
 
 
-def open_obligation_iva(page: Page, mapping: dict) -> bool:
+def open_obligation_iva(page: Page, mapping: dict, sat_ui: dict | None = None) -> bool:
     """Select 'IVA simplificado de confianza' on the administración de la declaración page to open the IVA form. Returns True if clicked."""
+    sat_ui = sat_ui or DEFAULT_SAT_UI
     LOG.info("IVA: step — selecting 'IVA simplificado de confianza' on administración page")
     ok = _try_click(page, mapping, "_select_obligation_iva")
     if ok:
         LOG.info("IVA: clicked 'IVA simplificado de confianza' (mapping)")
         page.wait_for_timeout(500)
         return True
-    for elem in page.get_by_text(re.compile(r"IVA\s+simplificado\s+de\s+confianza", re.I)).all():
+    iva_pat = _ui_pattern(sat_ui, "select_obligation_iva")
+    for elem in page.get_by_text(iva_pat).all():
         try:
             if elem.is_visible() and elem.locator("xpath=ancestor::*[contains(@class,'modal') or @role='dialog']").count() == 0:
                 elem.click(timeout=2000)
@@ -983,9 +1119,11 @@ def _get_isr_ingresos_scope(page: Page) -> Page:
     return page
 
 
-def _read_sat_total_ingresos_cobrados(page: Page, scope: Page, mapping: dict | None = None) -> float:
+def _read_sat_total_ingresos_cobrados(page: Page, scope: Page, mapping: dict | None = None, sat_ui: dict | None = None) -> float:
     """Read the value from SAT form section 'Total de ingresos efectivamente cobrados' (textbox/field in Ingresos tab). Ignores hidden modal. Returns 0.0 if not found."""
-    sat_label = "Total de ingresos efectivamente cobrados"
+    sat_ui = sat_ui or DEFAULT_SAT_UI
+    sat_label = sat_ui.get("total_ingresos_cobrados") or "Total de ingresos efectivamente cobrados"
+    total_cobrados_pat = re.compile(re.escape(sat_label), re.I)
     # If mapping has a selector for this field, try it first
     if mapping:
         for sel in mapping.get("_isr_ingresos_total_cobrados") or []:
@@ -1007,7 +1145,7 @@ def _read_sat_total_ingresos_cobrados(page: Page, scope: Page, mapping: dict | N
         tab_scope = scope
     try:
         label_el = None
-        for el in tab_scope.get_by_text(re.compile(r"Total de ingresos efectivamente cobrados", re.I)).all():
+        for el in tab_scope.get_by_text(total_cobrados_pat).all():
             try:
                 if el.is_visible():
                     label_el = el
@@ -1015,7 +1153,7 @@ def _read_sat_total_ingresos_cobrados(page: Page, scope: Page, mapping: dict | N
             except Exception:
                 continue
         if label_el is None:
-            for el in scope.get_by_text(re.compile(r"Total de ingresos efectivamente cobrados", re.I)).all():
+            for el in scope.get_by_text(total_cobrados_pat).all():
                 try:
                     if el.is_visible():
                         label_el = el
@@ -1023,7 +1161,7 @@ def _read_sat_total_ingresos_cobrados(page: Page, scope: Page, mapping: dict | N
                 except Exception:
                     continue
         if label_el is None:
-            raise RuntimeError("No visible label 'Total de ingresos efectivamente cobrados' found")
+            raise RuntimeError("No visible label %r found" % (sat_label,))
         # Label's "for" attribute points to input id (SAT often uses this)
         try:
             for_id = label_el.get_attribute("for")
@@ -1102,7 +1240,7 @@ def _read_sat_total_ingresos_cobrados(page: Page, scope: Page, mapping: dict | N
         # Try get_by_label in full scope (control may not be inside tab container)
         for try_scope in (scope, tab_scope):
             try:
-                control = try_scope.get_by_label(re.compile(r"Total de ingresos efectivamente cobrados", re.I)).first
+                control = try_scope.get_by_label(total_cobrados_pat).first
                 control.wait_for(state="visible", timeout=500)
                 raw = control.get_attribute("value")
                 if not raw or (isinstance(raw, str) and not raw.strip()):
@@ -1556,11 +1694,14 @@ def _click_capturar_total_percibidos(page: Page, scope: Page | Frame) -> bool:
     return False
 
 
-def _click_ver_detalle_isr_retenido(page_or_scope: Page | Frame) -> bool:
-    """Same logic as Phase 3 CAPTURAR: of all VER DETALLE on page, click the one whose row contains 'ISR retenido por personas morales'. Returns True if clicked."""
-    required_in_row = "ISR retenido por personas morales"
+def _click_ver_detalle_isr_retenido(page_or_scope: Page | Frame, sat_ui: dict | None = None) -> bool:
+    """Same logic as Phase 3 CAPTURAR: of all VER DETALLE on page, click the one whose row contains the configured row label. Returns True if clicked."""
+    sat_ui = sat_ui or DEFAULT_SAT_UI
+    required_in_row = sat_ui.get("isr_retenido_row_label") or "ISR retenido por personas morales"
+    ver_text = sat_ui.get("ver_detalle_button") or "VER DETALLE"
+    ver_pat = re.compile(re.escape(ver_text), re.I)
     try:
-        for ver in page_or_scope.locator("a, button, [role='button']").filter(has_text=re.compile(r"VER DETALLE", re.I)).all():
+        for ver in page_or_scope.locator("a, button, [role='button']").filter(has_text=ver_pat).all():
             try:
                 row = ver.locator("xpath=ancestor::tr[1] | ancestor::div[contains(@class,'row')][1]").first
                 if row.count() == 0:
@@ -1583,8 +1724,11 @@ def _click_ver_detalle_isr_retenido(page_or_scope: Page | Frame) -> bool:
     return False
 
 
-def _click_ver_detalle_next_to_label(page_or_scope: Page | Frame, label_substring: str) -> bool:
+def _click_ver_detalle_next_to_label(page_or_scope: Page | Frame, label_substring: str, sat_ui: dict | None = None) -> bool:
     """Find the label containing label_substring (prefer visible one when multiple), then click the 'VER DETALLE' in the same row. Returns True if clicked."""
+    sat_ui = sat_ui or DEFAULT_SAT_UI
+    ver_text = sat_ui.get("ver_detalle_button") or "VER DETALLE"
+    ver_pat = re.compile(re.escape(ver_text), re.I)
     try:
         loc = page_or_scope.get_by_text(re.compile(re.escape(label_substring), re.I))
         if loc.count() == 0:
@@ -1609,7 +1753,7 @@ def _click_ver_detalle_next_to_label(page_or_scope: Page | Frame, label_substrin
             container = label_el.locator(f"xpath=(ancestor::*)[{i}]")
             if container.count() == 0:
                 break
-            ver_btns = container.first.locator("a, button, [role='button']").filter(has_text=re.compile(r"VER DETALLE", re.I))
+            ver_btns = container.first.locator("a, button, [role='button']").filter(has_text=ver_pat)
             if ver_btns.count() == 0:
                 continue
             ver_btn = ver_btns.first
@@ -1642,7 +1786,7 @@ def _set_dropdown_by_label_scope(scope: Page | Frame, page_for_click: Page, labe
     return False
 
 
-def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
+def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict, sat_ui: dict | None = None) -> None:
     """Fill ISR simplificado Ingresos form. Phase 3 (ISR simplificado de confianza. Personas físicas):
     - *¿Los ingresos fueron obtenidos a través de copropiedad? → always "No"
     - Total de ingresos efectivamente cobrados → skip (prefilled, no action)
@@ -1861,7 +2005,7 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
     LOG.info("")
     LOG.info("===== Phase 3: sección 4 - ¿Tienes ingresos a disminuir? / *Ingresos a disminuir =====")
     # 4. ¿Tienes ingresos a disminuir? — compare SAT "Total de ingresos efectivamente cobrados" vs Excel (Total de ingresos acumulados); if SAT - Excel > 1 → Sí + CAPTURAR popup
-    sat_total_cobrados = _read_sat_total_ingresos_cobrados(page, scope, mapping)
+    sat_total_cobrados = _read_sat_total_ingresos_cobrados(page, scope, mapping, sat_ui)
     sat_total_cobrados = float(sat_total_cobrados) if sat_total_cobrados is not None else 0.0
     excel_total_cobrados = float(excel_total_cobrados) if excel_total_cobrados is not None else 0.0
     LOG.info("Phase 3: Comparison for *¿Tienes ingresos a disminuir? / *¿Tienes ingresos adicionales?: SAT=%.2f, Excel=%.2f", sat_total_cobrados, excel_total_cobrados)
@@ -2412,6 +2556,12 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
     # Phase 4: GUARDAR → Determinación tab (to the right of Ingresos) → VER DETALLE (ISR retenido por personas morales) → popup fill "ISR retenido no acreditable" → CERRAR → GUARDAR
     LOG.info("")
     LOG.info("===== Phase 4: Determinación (GUARDAR → Determinación tab → ISR retenido VER DETALLE) =====")
+    sat_ui = sat_ui or DEFAULT_SAT_UI
+    _det_tab = sat_ui.get("determinacion_tab_name") or "Determinación"
+    _isr_row = sat_ui.get("isr_retenido_row_label") or "ISR retenido por personas morales"
+    _isr_no_acred = sat_ui.get("isr_retenido_no_acreditable_label") or "ISR retenido no acreditable"
+    _isr_excel_key = sat_ui.get("isr_retenido_excel_label") or "ISR retenido"
+    _ver_det = sat_ui.get("ver_detalle_button") or "VER DETALLE"
     try:
         page.wait_for_timeout(400)
         guardar_clicked = False
@@ -2465,27 +2615,27 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
                 else:
                     elem.click(timeout=3000)
                 page.wait_for_timeout(600)
-                # Verify section switched: "ISR retenido por personas morales" or VER DETALLE should appear
-                if page.get_by_text(re.compile(r"ISR retenido por personas morales", re.I)).first.is_visible(timeout=1500):
+                # Verify section switched: row label or VER DETALLE should appear
+                if page.get_by_text(re.compile(re.escape(_isr_row), re.I)).first.is_visible(timeout=1500):
                     return True
-                if page.get_by_text("VER DETALLE", exact=False).first.is_visible(timeout=800):
+                if page.get_by_text(_ver_det, exact=False).first.is_visible(timeout=800):
                     return True
                 return False
             except Exception:
                 return False
 
         # 1) Prefer role=tab (proper tab widget)
-        tab_loc = page.get_by_role("tab", name=re.compile(r"Determinación", re.I))
+        tab_loc = page.get_by_role("tab", name=re.compile(re.escape(_det_tab), re.I))
         if tab_loc.count() > 0 and _try_click_det_tab(tab_loc.first):
             det_clicked = True
             LOG.info("Phase 4: Determinación tab clicked (role=tab)")
         if not det_clicked:
-            # 2) Tab bar: element with "Determinación" inside tablist/tab container
+            # 2) Tab bar: element with Determinación inside tablist/tab container
             for container in page.locator("[role='tablist'], .nav-tabs, ul.tabs, .tabs, [class*='tab']").all():
                 try:
                     if not container.is_visible():
                         continue
-                    elem = container.get_by_text("Determinación", exact=True).first
+                    elem = container.get_by_text(_det_tab, exact=True).first
                     if elem.count() > 0 and _try_click_det_tab(elem):
                         det_clicked = True
                         LOG.info("Phase 4: Determinación tab clicked (inside tablist)")
@@ -2493,7 +2643,7 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
                 except Exception:
                     continue
         if not det_clicked:
-            for elem in page.get_by_text("Determinación", exact=True).all():
+            for elem in page.get_by_text(_det_tab, exact=True).all():
                 try:
                     if not elem.is_visible():
                         continue
@@ -2506,7 +2656,7 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
                 except Exception:
                     continue
         if not det_clicked:
-            for elem in page.locator("a, button, [role='tab'], li, span").filter(has_text=re.compile(r"^Determinación$", re.I)).all():
+            for elem in page.locator("a, button, [role='tab'], li, span").filter(has_text=re.compile(r"^%s$" % re.escape(_det_tab), re.I)).all():
                 try:
                     if not elem.is_visible():
                         continue
@@ -2519,8 +2669,8 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
                 except Exception:
                     continue
         if not det_clicked:
-            # Last resort: force click first visible "Determinación" (exclude modals)
-            for elem in page.get_by_text("Determinación", exact=True).all():
+            # Last resort: force click first visible Determinación tab (exclude modals)
+            for elem in page.get_by_text(_det_tab, exact=True).all():
                 try:
                     if not elem.is_visible():
                         continue
@@ -2529,7 +2679,7 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
                     elem.scroll_into_view_if_needed(timeout=2000)
                     elem.click(force=True, timeout=3000)
                     page.wait_for_timeout(1000)
-                    if page.get_by_text(re.compile(r"ISR retenido por personas morales", re.I)).first.is_visible(timeout=2000):
+                    if page.get_by_text(re.compile(re.escape(_isr_row), re.I)).first.is_visible(timeout=2000):
                         det_clicked = True
                         LOG.info("Phase 4: Determinación tab clicked (force)")
                         break
@@ -2543,31 +2693,31 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
         page.wait_for_timeout(500)
         LOG.info("Phase 4: Determinación section loaded; next: VER DETALLE on same row as label 'ISR retenido por personas morales'")
 
-        # Excel value for "ISR retenido no acreditable": row with label "ISR retenido" in col D or E (same as Base gravable)
-        LOG.info("Phase 4: getting value from Excel: row with label 'ISR retenido' in col D or E (parse as Base gravable)")
+        # Excel value for "ISR retenido no acreditable": row with label from config (e.g. ISR retenido) in col D or E
+        LOG.info("Phase 4: getting value from Excel: row with label %r in col D or E (parse as Base gravable)", _isr_excel_key)
         label_map = data.get("label_map") or {}
-        isr_retenido_raw = label_map.get("ISR retenido")
+        isr_retenido_raw = label_map.get(_isr_excel_key)
         isr_retenido_parsed = _parse_currency(isr_retenido_raw) if isr_retenido_raw is not None else 0.0
         workbook_path = data.get("workbook_path") or "(workbook not set)"
         LOG.info(
-            "Phase 4: Excel value for ISR retenido no acreditable: label='ISR retenido' | workbook=%s | raw=%s → parsed=%.2f",
-            workbook_path, isr_retenido_raw, isr_retenido_parsed,
+            "Phase 4: Excel value for ISR retenido no acreditable: label=%r | workbook=%s | raw=%s → parsed=%.2f",
+            _isr_excel_key, workbook_path, isr_retenido_raw, isr_retenido_parsed,
         )
         isr_retenido_str = str(int(round(isr_retenido_parsed))) if isr_retenido_parsed is not None else "0"
 
         ver_detalle_clicked = False
-        LOG.info("Phase 4: clicking VER DETALLE (same row as label 'ISR retenido por personas morales', same logic as Phase 3 CAPTURAR)")
+        LOG.info("Phase 4: clicking VER DETALLE (same row as label %r, same logic as Phase 3 CAPTURAR)", _isr_row)
         try:
-            # Same logic as Phase 3: of all VER DETALLE, click the one whose row contains "ISR retenido por personas morales"
-            ver_detalle_clicked = _click_ver_detalle_isr_retenido(page)
+            # Same logic as Phase 3: of all VER DETALLE, click the one whose row contains the configured row label
+            ver_detalle_clicked = _click_ver_detalle_isr_retenido(page, sat_ui)
             if not ver_detalle_clicked:
-                ver_detalle_clicked = _click_ver_detalle_next_to_label(page, "ISR retenido por personas morales")
+                ver_detalle_clicked = _click_ver_detalle_next_to_label(page, _isr_row, sat_ui)
             if not ver_detalle_clicked:
                 try:
                     scope = _get_isr_ingresos_scope(page)
                     scope.locator("#tab457maincontainer1").first.wait_for(state="attached", timeout=500)
                     tab_scope = scope.locator("#tab457maincontainer1").first
-                    ver_detalle_clicked = _click_ver_detalle_isr_retenido(tab_scope) or _click_ver_detalle_next_to_label(tab_scope, "ISR retenido por personas morales")
+                    ver_detalle_clicked = _click_ver_detalle_isr_retenido(tab_scope, sat_ui) or _click_ver_detalle_next_to_label(tab_scope, _isr_row, sat_ui)
                 except Exception:
                     pass
             if ver_detalle_clicked:
@@ -2579,7 +2729,7 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
                         if page.get_by_role("dialog").first.is_visible():
                             popup_visible = True
                             break
-                        if page.get_by_text(re.compile(r"ISR retenido no acreditable", re.I)).first.is_visible():
+                        if page.get_by_text(re.compile(re.escape(_isr_no_acred), re.I)).first.is_visible():
                             popup_visible = True
                             break
                     except Exception:
@@ -2591,16 +2741,16 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
                 else:
                     LOG.info("Phase 4: popup appeared")
             else:
-                LOG.warning("Phase 4: could not click VER DETALLE next to ISR retenido por personas morales")
+                LOG.warning("Phase 4: could not click VER DETALLE next to %s", _isr_row)
         except Exception as e:
             LOG.warning("Phase 4: VER DETALLE click failed: %s", e)
 
         if ver_detalle_clicked:
             page.wait_for_timeout(200)
-            LOG.info("Phase 4: looking for popup with label 'ISR retenido no acreditable'")
+            LOG.info("Phase 4: looking for popup with label %r", _isr_no_acred)
             try:
-                page.get_by_text(re.compile(r"ISR retenido no acreditable", re.I)).first.wait_for(state="visible", timeout=150)
-                LOG.info("Phase 4: ISR retenido popup (ISR retenido no acreditable) visible")
+                page.get_by_text(re.compile(re.escape(_isr_no_acred), re.I)).first.wait_for(state="visible", timeout=150)
+                LOG.info("Phase 4: ISR retenido popup (%s) visible", _isr_no_acred)
             except Exception:
                 pass
             page.wait_for_timeout(10)
@@ -2609,7 +2759,7 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
             for try_dialog in [
                 lambda: page.get_by_role("dialog").first,
                 lambda: page.locator(".modal, [role='dialog']").first,
-                lambda: page.get_by_text(re.compile(r"ISR retenido no acreditable", re.I)).first.locator("xpath=ancestor::*[contains(@class,'modal') or contains(@class,'dialog') or @role='dialog'][1]"),
+                lambda: page.get_by_text(re.compile(re.escape(_isr_no_acred), re.I)).first.locator("xpath=ancestor::*[contains(@class,'modal') or contains(@class,'dialog') or @role='dialog'][1]"),
             ]:
                 try:
                     d = try_dialog()
@@ -2670,7 +2820,7 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
             try:
                 # Strategy 1: Same as Descuentos popup (section 3) — label then following::input[1] and following::input[2]
                 try:
-                    label_el = dialog.get_by_text(re.compile(r"ISR retenido no acreditable", re.I)).first
+                    label_el = dialog.get_by_text(re.compile(re.escape(_isr_no_acred), re.I)).first
                     label_el.wait_for(state="visible", timeout=400)
                     for input_index in [1, 2]:
                         try:
@@ -2708,7 +2858,7 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
 
                 if not filled:
                     # Strategy 3: Label "no acreditable" + xpaths (exclude row with "a adicionar")
-                    for label_el in dialog.get_by_text(re.compile(r"ISR retenido no acreditable", re.I)).all():
+                    for label_el in dialog.get_by_text(re.compile(re.escape(_isr_no_acred), re.I)).all():
                         try:
                             if not label_el.is_visible():
                                 continue
@@ -2742,7 +2892,7 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
 
                 if not filled:
                     try:
-                        inp = dialog.get_by_label(re.compile(r"ISR retenido no acreditable", re.I)).first
+                        inp = dialog.get_by_label(re.compile(re.escape(_isr_no_acred), re.I)).first
                         inp.wait_for(state="visible", timeout=300)
                         if _set_isr_no_acreditable_value(inp, isr_retenido_str):
                             filled = True
@@ -2809,6 +2959,10 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
     # Phase 5: Pago tab → *¿Tienes compensaciones por aplicar? → No, *¿Tienes estímulos por aplicar? → No → GUARDAR → wait for load
     LOG.info("")
     LOG.info("===== Phase 5: Pago (Pago tab → compensaciones/estímulos → No → GUARDAR) =====")
+    _pago_tab = sat_ui.get("pago_tab_name") or "Pago"
+    _comp_q = sat_ui.get("isr_pago_compensaciones_question") or "compensaciones por aplicar"
+    _estim_q = sat_ui.get("isr_pago_estimulos_question") or "estímulos por aplicar"
+    _btn_guardar = sat_ui.get("btn_guardar") or "GUARDAR"
     try:
         page.wait_for_timeout(400)
         LOG.info("Phase 5: clicking Pago tab (to the right of Determinación)")
@@ -2823,17 +2977,17 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
                 else:
                     elem.click(timeout=3000)
                 page.wait_for_timeout(600)
-                if page.get_by_text(re.compile(r"¿Tienes compensaciones por aplicar\?", re.I)).first.is_visible(timeout=1500):
+                if page.get_by_text(re.compile(re.escape(_comp_q), re.I)).first.is_visible(timeout=1500):
                     return True
-                if page.get_by_text(re.compile(r"compensaciones por aplicar", re.I)).first.is_visible(timeout=1500):
+                if page.get_by_text(re.compile(re.escape(_comp_q), re.I)).first.is_visible(timeout=1500):
                     return True
-                if page.get_by_text(re.compile(r"¿Tienes estímulos por aplicar\?", re.I)).first.is_visible(timeout=800):
+                if page.get_by_text(re.compile(re.escape(_estim_q), re.I)).first.is_visible(timeout=800):
                     return True
                 return False
             except Exception:
                 return False
 
-        tab_loc = page.get_by_role("tab", name=re.compile(r"Pago", re.I))
+        tab_loc = page.get_by_role("tab", name=re.compile(re.escape(_pago_tab), re.I))
         if tab_loc.count() > 0 and _try_click_pago_tab(tab_loc.first):
             pago_clicked = True
             LOG.info("Phase 5: Pago tab clicked (role=tab)")
@@ -2842,7 +2996,7 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
                 try:
                     if not container.is_visible():
                         continue
-                    elem = container.get_by_text("Pago", exact=True).first
+                    elem = container.get_by_text(_pago_tab, exact=True).first
                     if elem.count() > 0 and _try_click_pago_tab(elem):
                         pago_clicked = True
                         LOG.info("Phase 5: Pago tab clicked (inside tablist)")
@@ -2850,7 +3004,7 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
                 except Exception:
                     continue
         if not pago_clicked:
-            for elem in page.get_by_text("Pago", exact=True).all():
+            for elem in page.get_by_text(_pago_tab, exact=True).all():
                 try:
                     if not elem.is_visible():
                         continue
@@ -2863,7 +3017,7 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
                 except Exception:
                     continue
         if not pago_clicked:
-            for elem in page.locator("a, button, [role='tab'], li, span").filter(has_text=re.compile(r"^Pago$", re.I)).all():
+            for elem in page.locator("a, button, [role='tab'], li, span").filter(has_text=re.compile(r"^%s$" % re.escape(_pago_tab), re.I)).all():
                 try:
                     if not elem.is_visible():
                         continue
@@ -2876,7 +3030,7 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
                 except Exception:
                     continue
         if not pago_clicked:
-            for elem in page.get_by_text("Pago", exact=True).all():
+            for elem in page.get_by_text(_pago_tab, exact=True).all():
                 try:
                     if not elem.is_visible():
                         continue
@@ -2885,7 +3039,7 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
                     elem.scroll_into_view_if_needed(timeout=2000)
                     elem.click(force=True, timeout=3000)
                     page.wait_for_timeout(1000)
-                    if page.get_by_text(re.compile(r"compensaciones por aplicar", re.I)).first.is_visible(timeout=2000):
+                    if page.get_by_text(re.compile(re.escape(_comp_q), re.I)).first.is_visible(timeout=2000):
                         pago_clicked = True
                         LOG.info("Phase 5: Pago tab clicked (force)")
                         break
@@ -2899,29 +3053,30 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
         page.wait_for_timeout(500)
         LOG.info("Phase 5: Pago section loaded; next: dropdowns *¿Tienes compensaciones por aplicar? and *¿Tienes estímulos por aplicar? → No")
 
-        LOG.info("Phase 5: selecting *¿Tienes compensaciones por aplicar? → No")
+        LOG.info("Phase 5: selecting *%s → No", _comp_q)
         # Pago uses custom dropdown widgets; go directly to the Pago-specific helper to avoid slow generic resolution.
-        comp_ok = _fill_pago_custom_dropdown(page, "compensaciones por aplicar", "No")
+        comp_ok = _fill_pago_custom_dropdown(page, _comp_q, "No")
         if comp_ok:
-            LOG.info("Phase 5: dropdown *¿Tienes compensaciones por aplicar? set to No")
+            LOG.info("Phase 5: dropdown *%s set to No", _comp_q)
         else:
-            LOG.warning("Phase 5: could not set *¿Tienes compensaciones por aplicar? to No")
+            LOG.warning("Phase 5: could not set *%s to No", _comp_q)
         page.wait_for_timeout(120)
-        LOG.info("Phase 5: selecting *¿Tienes estímulos por aplicar? → No")
+        LOG.info("Phase 5: selecting *%s → No", _estim_q)
         # Same for estímulos: use Pago-specific helper directly.
-        estim_ok = _fill_pago_custom_dropdown(page, "estímulos por aplicar", "No")
+        estim_ok = _fill_pago_custom_dropdown(page, _estim_q, "No")
         if estim_ok:
-            LOG.info("Phase 5: dropdown *¿Tienes estímulos por aplicar? set to No")
+            LOG.info("Phase 5: dropdown *%s set to No", _estim_q)
         else:
-            LOG.warning("Phase 5: could not set *¿Tienes estímulos por aplicar? to No")
+            LOG.warning("Phase 5: could not set *%s to No", _estim_q)
         page.wait_for_timeout(200)
 
         LOG.info("Phase 5: clicking GUARDAR")
         guardar_pago_clicked = False
+        _guardar_pat = re.compile(re.escape(_btn_guardar), re.I)
         for loc in [
-            page.get_by_role("button", name=re.compile(r"GUARDAR", re.I)),
-            page.locator("input[type='submit'][value*='GUARDAR'], input[type='button'][value*='GUARDAR']"),
-            page.get_by_text("GUARDAR", exact=True),
+            page.get_by_role("button", name=_guardar_pat),
+            page.locator("input[type='submit'][value*='%s'], input[type='button'][value*='%s']" % (_btn_guardar, _btn_guardar)),
+            page.get_by_text(_btn_guardar, exact=True),
         ]:
             try:
                 first_btn = loc.first
@@ -2944,20 +3099,21 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict) -> None:
         LOG.warning("Phase 5 (Pago tab / compensaciones / estímulos / GUARDAR) failed: %s", e)
 
 
-def fill_iva_simplificado(page: Page, mapping: dict, data: dict) -> None:
+def fill_iva_simplificado(page: Page, mapping: dict, data: dict, sat_ui: dict | None = None, iva_determinacion_fields: list[tuple[str, str]] | None = None) -> None:
     """
     Central entry for IVA simplificado de confianza. Run after fill_isr_ingresos_form.
     Navigates: ADMINISTRACIÓN DE LA DECLARACIÓN → IVA simplificado de confianza → fill Determinación form → GUARDAR → Pago tab.
     """
+    sat_ui = sat_ui or DEFAULT_SAT_UI
     LOG.info("")
     LOG.info("===== IVA simplificado de confianza (central) =====")
-    if not click_administracion_declaracion(page, mapping):
+    if not click_administracion_declaracion(page, mapping, sat_ui):
         LOG.warning("IVA simplificado: could not click ADMINISTRACIÓN DE LA DECLARACIÓN")
     page.wait_for_timeout(400)
-    if not open_obligation_iva(page, mapping):
+    if not open_obligation_iva(page, mapping, sat_ui):
         LOG.warning("IVA simplificado: could not click IVA simplificado de confianza")
     page.wait_for_timeout(400)
-    fill_iva_simplificado_determinacion(page, mapping, data)
+    fill_iva_simplificado_determinacion(page, mapping, data, iva_determinacion_fields=iva_determinacion_fields)
     LOG.info("===== IVA simplificado de confianza (central) complete =====")
     LOG.info("")
 
@@ -3050,16 +3206,17 @@ def _fill_iva_input_by_position(
     return False
 
 
-def fill_iva_simplificado_determinacion(page: Page, mapping: dict, data: dict) -> None:
+def fill_iva_simplificado_determinacion(page: Page, mapping: dict, data: dict, iva_determinacion_fields: list[tuple[str, str]] | None = None) -> None:
     """
     Fill IVA simplificado de confianza Determinación form (run after navigating from administración to IVA).
-    Main form: Actividades gravadas 16%, 0%, exentas, no objeto, IVA retenido (from Excel).
+    Main form: fields from iva_determinacion_fields (excel_label, form_label) or default list.
     Then CAPTURAR next to *IVA acreditable del periodo → popup: fill IVA acreditable por actividades gravadas 16%/8%/0% (from Excel), actividades mixtas = 0 → CERRAR → GUARDAR → click Pago tab.
     """
     LOG.info("")
     LOG.info("===== IVA simplificado de confianza: Determinación form =====")
     label_map = data.get("label_map") or {}
     scope = page
+    main_fields = iva_determinacion_fields if iva_determinacion_fields else list(DEFAULT_IVA_DETERMINACION_FIELDS)
 
     # Wait for IVA form (Determinación)
     LOG.info("IVA Determinación: waiting for IVA form to load")
@@ -3086,30 +3243,22 @@ def fill_iva_simplificado_determinacion(page: Page, mapping: dict, data: dict) -
     except Exception:
         pass
 
-    # Excel label -> (form label substring, optional)
-    main_fields = [
-        ("Actividades gravadas a la tasa del 16%", "Actividades gravadas a la tasa del 16%"),
-        ("Actividades gravadas a la tasa del 0% otros", "Actividades gravadas a la tasa del 0%"),
-        ("Actividades exentas", "Actividades exentas"),
-        ("Actividades no objeto de impuesto", "Actividades no objeto del impuesto"),
-        ("IVA retenido a favor", "IVA retenido"),
-    ]
     for step, (excel_label, form_label) in enumerate(main_fields, start=1):
         raw = label_map.get(excel_label)
         val = _parse_currency(raw) if raw is not None else 0.0
         value_str = str(int(round(val))) if val is not None else "0"
         if form_label == "IVA retenido" and val is not None and val < 0:
             value_str = str(abs(int(round(val))))
-        LOG.info("IVA Determinación: step %s/5 — filling %r (excel %r) with value %s", step, form_label, excel_label, value_str)
+        LOG.info("IVA Determinación: step %s/%s — filling %r (excel %r) with value %s", step, len(main_fields), form_label, excel_label, value_str)
         filled = _try_fill(iva_scope, page, mapping, form_label, value_str)
         if not filled:
             filled = _fill_input_next_to_label(iva_scope, page, form_label, value_str)
         if not filled:
-            filled = _fill_iva_input_by_position(page, iva_scope, step, 5, value_str)
+            filled = _fill_iva_input_by_position(page, iva_scope, step, len(main_fields), value_str)
         if filled:
             LOG.info("IVA Determinación: step %s/5 — filled %r", step, form_label)
         else:
-            LOG.warning("IVA Determinación: step %s/5 — could not fill %r", step, form_label)
+            LOG.warning("IVA Determinación: step %s/%s — could not fill %r", step, len(main_fields), form_label)
         page.wait_for_timeout(80)
 
     # Click CAPTURAR next to *IVA acreditable del periodo (reuse ISR logic: iterate CAPTURARs, match row by label text)
@@ -3839,6 +3988,7 @@ def run(
     if test_login:
         LOG.info("Test mode: login only (no DB, using test_cer_path / test_key_path / test_password from config)")
         efirma = get_efirma_from_config(config)
+        sat_ui = get_sat_ui(config)
         for attempt in range(2):
             try:
                 with sync_playwright() as p:
@@ -3847,7 +3997,7 @@ def run(
                     page = context.new_page()
                     _run_context = {"page": page, "mapping": mapping}
                     try:
-                        login_sat(page, efirma, mapping, base_url)
+                        login_sat(page, efirma, mapping, base_url, sat_ui)
                         LOG.info("Test login: e.firma login completed. Browser will stay open 10s for inspection.")
                         page.wait_for_timeout(10000)
                         return True
@@ -3898,13 +4048,14 @@ def run(
                     page = context.new_page()
                     _run_context = {"page": page, "mapping": mapping}
                     try:
-                        login_sat(page, efirma, mapping, base_url)
+                        sat_ui = get_sat_ui(config)
+                        login_sat(page, efirma, mapping, base_url, sat_ui)
                         print()
                         LOG.info("\n")
                         LOG.info("Opening Configuración de la declaración (Presentar declaración)")
                         if not open_configuration_form(page, mapping):
                             LOG.warning("Could not click Presentar declaración; continuing to fill initial form.")
-                        dismiss_draft_if_present(page, mapping)
+                        dismiss_draft_if_present(page, mapping, sat_ui)
                         fill_initial_form(page, data, mapping)
                         LOG.info("Test initial form: initial form step complete. Browser will stay open 10s for inspection.")
                         page.wait_for_timeout(10000)
@@ -3945,14 +4096,8 @@ def run(
         label_map = data["label_map"]
         LOG.info("Period: %s-%s, periodicidad: %s", data.get("year"), data.get("month"), data.get("periodicidad"))
         efirma = get_efirma_from_config(config)
-        isr_labels = [
-            "Ingresos nominales facturados",
-            "Total de ingresos acumulados",
-            "Base gravable del pago provisional",
-            "Impuesto del periodo",
-            "Total ISR retenido del periodo",
-            "ISR a cargo",
-        ]
+        sat_ui = get_sat_ui(config)
+        isr_labels = get_isr_determinacion_labels(config)
         run_success = False
         for attempt in range(2):
             try:
@@ -3962,28 +4107,29 @@ def run(
                     page = context.new_page()
                     _run_context = {"page": page, "mapping": mapping}
                     try:
-                        login_sat(page, efirma, mapping, base_url)
+                        login_sat(page, efirma, mapping, base_url, sat_ui)
                         LOG.info("Phase 1: Logged in to SAT")
                         print()
                         LOG.info("\n")
                         if not open_configuration_form(page, mapping):
                             LOG.warning("Could not click Presentar declaración; continuing to fill initial form.")
-                        dismiss_draft_if_present(page, mapping)
+                        dismiss_draft_if_present(page, mapping, sat_ui)
                         fill_initial_form(page, data, mapping)
                         page.wait_for_timeout(400)
                         print()
                         LOG.info("\n")
                         LOG.info("Phase 2→3: SIGUIENTE, wait for load, CERRAR pop-up")
-                        if not transition_initial_to_phase3(page, mapping):
+                        if not transition_initial_to_phase3(page, mapping, sat_ui):
                             LOG.warning("Transition to phase 3 had issues; continuing.")
                         LOG.info("Phase 3: Selecting ISR simplificado de confianza and filling ISR section")
                         if not open_obligation_isr(page, mapping):
                             LOG.warning("Could not click ISR simplificado de confianza")
                         page.wait_for_timeout(500)
-                        fill_isr_ingresos_form(page, mapping, data)
+                        fill_isr_ingresos_form(page, mapping, data, sat_ui)
                         fill_obligation_section(page, mapping, label_map, isr_labels)
                         LOG.info("Test full run: ISR complete; running IVA simplificado de confianza (central)")
-                        fill_iva_simplificado(page, mapping, data)
+                        iva_det_fields = get_iva_determinacion_fields(config)
+                        fill_iva_simplificado(page, mapping, data, sat_ui, iva_determinacion_fields=iva_det_fields)
                         LOG.info("Test full run: initial form + ISR + IVA Determinación + Pago tab complete. Browser will stay open 10s for inspection.")
                         page.wait_for_timeout(10000)
                         run_success = True
@@ -4026,6 +4172,7 @@ def run(
         data["workbook_path"] = workbook_path
         LOG.info("Period: %s-%s, periodicidad: %s", data.get("year"), data.get("month"), data.get("periodicidad"))
         efirma = get_efirma_from_config(config)
+        sat_ui = get_sat_ui(config)
         run_success = False
         for attempt in range(2):
             try:
@@ -4035,22 +4182,22 @@ def run(
                     page = context.new_page()
                     _run_context = {"page": page, "mapping": mapping}
                     try:
-                        login_sat(page, efirma, mapping, base_url)
+                        login_sat(page, efirma, mapping, base_url, sat_ui)
                         LOG.info("Phase 1: Logged in to SAT")
                         print()
                         LOG.info("\n")
                         if not open_configuration_form(page, mapping):
                             LOG.warning("Could not click Presentar declaración; continuing.")
-                        dismiss_draft_if_present(page, mapping)
+                        dismiss_draft_if_present(page, mapping, sat_ui)
                         fill_initial_form(page, data, mapping)
                         page.wait_for_timeout(400)
                         print()
                         LOG.info("\n")
                         LOG.info("Phase 2→3: SIGUIENTE, wait for load, CERRAR pop-up")
-                        if not transition_initial_to_phase3(page, mapping):
+                        if not transition_initial_to_phase3(page, mapping, sat_ui):
                             LOG.warning("Transition to phase 3 had issues; continuing.")
                         LOG.info("Test IVA: Selecting IVA simplificado de confianza (skip ISR)")
-                        if not open_obligation_iva(page, mapping):
+                        if not open_obligation_iva(page, mapping, sat_ui):
                             LOG.warning("Could not click IVA simplificado de confianza")
                         page.wait_for_timeout(1500)
                         fill_iva_simplificado_determinacion(page, mapping, data)
@@ -4093,14 +4240,8 @@ def run(
         label_map = data["label_map"]
         LOG.info("Period: %s-%s, periodicidad: %s", data.get("year"), data.get("month"), data.get("periodicidad"))
         efirma = get_efirma_from_config(config)
-        isr_labels = [
-            "Ingresos nominales facturados",
-            "Total de ingresos acumulados",
-            "Base gravable del pago provisional",
-            "Impuesto del periodo",
-            "Total ISR retenido del periodo",
-            "ISR a cargo",
-        ]
+        sat_ui = get_sat_ui(config)
+        isr_labels = get_isr_determinacion_labels(config)
         for attempt in range(2):
             try:
                 with sync_playwright() as p:
@@ -4110,25 +4251,25 @@ def run(
                     _run_context = {"page": page, "mapping": mapping}
                     try:
                         LOG.info("Phase 1: Logging in to SAT (e.firma)")
-                        login_sat(page, efirma, mapping, base_url)
+                        login_sat(page, efirma, mapping, base_url, sat_ui)
                         print()
                         LOG.info("\n")
                         LOG.info("Phase 2: Opening Configuración (Presentar declaración), then filling Ejercicio → Periodicidad → Periodo → Tipo")
                         if not open_configuration_form(page, mapping):
                             LOG.warning("Could not click Presentar declaración")
-                        dismiss_draft_if_present(page, mapping)
+                        dismiss_draft_if_present(page, mapping, sat_ui)
                         fill_initial_form(page, data, mapping)
                         page.wait_for_timeout(400)
                         print()
                         LOG.info("\n")
                         LOG.info("Phase 2→3: Clicking SIGUIENTE, waiting for load, closing pre-fill pop-up (CERRAR)")
-                        if not transition_initial_to_phase3(page, mapping):
+                        if not transition_initial_to_phase3(page, mapping, sat_ui):
                             LOG.warning("Transition to phase 3 (SIGUIENTE/CERRAR) had issues; continuing.")
                         LOG.info("Phase 3: Selecting ISR simplificado de confianza and filling ISR section (Ingresos form per PDF pp 25-42)")
                         if not open_obligation_isr(page, mapping):
                             LOG.warning("Could not click ISR simplificado de confianza")
                         page.wait_for_timeout(500)
-                        fill_isr_ingresos_form(page, mapping, data)
+                        fill_isr_ingresos_form(page, mapping, data, sat_ui)
                         fill_obligation_section(page, mapping, label_map, isr_labels)
                         LOG.info("Test phase 3 complete (Phase 1 login + Phase 2 initial form + Phase 3 ISR section). Browser will stay open 10s for inspection.")
                         page.wait_for_timeout(10000)
@@ -4171,6 +4312,10 @@ def run(
     LOG.info("Fetching e.firma from DB for company=%s branch=%s", company_id, branch_id)
     efirma = get_efirma_from_db(company_id, branch_id, config)
     tolerance = config.get("totals_tolerance_pesos", TOLERANCE_PESOS)
+    sat_ui = get_sat_ui(config)
+    isr_labels = get_isr_determinacion_labels(config)
+    iva_determinacion_fields = get_iva_determinacion_fields(config)
+    iva_pago_labels = get_iva_pago_labels(config)
 
     for attempt in range(2):
         try:
@@ -4180,56 +4325,34 @@ def run(
                 page = context.new_page()
                 _run_context = {"page": page, "mapping": mapping}
                 try:
-                    login_sat(page, efirma, mapping, base_url)
+                    login_sat(page, efirma, mapping, base_url, sat_ui)
                     LOG.info("Phase 1: Logged in to SAT")
                     print()
                     LOG.info("\n")
                     if not open_configuration_form(page, mapping):
                         LOG.warning("Could not click Presentar declaración")
-                    dismiss_draft_if_present(page, mapping)
+                    dismiss_draft_if_present(page, mapping, sat_ui)
                     fill_initial_form(page, data, mapping)
                     page.wait_for_timeout(400)
                     print()
                     LOG.info("\n")
                     # Phase 2→3: SIGUIENTE, wait for load, click CERRAR on pre-fill pop-up
-                    if not transition_initial_to_phase3(page, mapping):
+                    if not transition_initial_to_phase3(page, mapping, sat_ui):
                         LOG.warning("Transition to phase 3 (SIGUIENTE/CERRAR) had issues; continuing.")
                     # Phase 3: Select ISR simplificado de confianza, then fill ISR Ingresos form (per PDF pp 25-42)
                     if not open_obligation_isr(page, mapping):
                         LOG.warning("Could not click ISR simplificado de confianza; continuing to fill ISR fields anyway.")
                     page.wait_for_timeout(500)
-                    fill_isr_ingresos_form(page, mapping, data)
-                    isr_labels = [
-                        "Ingresos nominales facturados",
-                        "Total de ingresos acumulados",
-                        "Base gravable del pago provisional",
-                        "Impuesto del periodo",
-                        "Total ISR retenido del periodo",
-                        "ISR a cargo",
-                    ]
+                    fill_isr_ingresos_form(page, mapping, data, sat_ui)
                     fill_obligation_section(page, mapping, label_map, isr_labels)
                     page.wait_for_timeout(700)
 
                     # IVA simplificado de confianza (central: ADMINISTRACIÓN → IVA → Determinación → Pago tab)
-                    fill_iva_simplificado(page, mapping, data)
+                    fill_iva_simplificado(page, mapping, data, sat_ui, iva_determinacion_fields=iva_determinacion_fields)
                     page.wait_for_timeout(700)
 
                     # Fill any remaining IVA fields (e.g. Pago tab) via mapping
-                    iva_labels = [
-                        "Actividades gravadas a la tasa del 16%",
-                        "Actividades gravadas a la tasa del 8%",
-                        "Actividades gravadas a la tasa del 0% otros",
-                        "Actividades exentas",
-                        "Actividades no objeto de impuesto",
-                        "IVA a cargo a la tasa del 16% y 8%",
-                        "Total IVA Trasladado",
-                        "IVA retenido a favor",
-                        "IVA acreditable del periodo",
-                        "Cantidad a cargo",
-                        "IVA a cargo",
-                        "IVA a favor",
-                    ]
-                    fill_obligation_section(page, mapping, label_map, iva_labels)
+                    fill_obligation_section(page, mapping, label_map, iva_pago_labels)
                     page.wait_for_timeout(1000)
 
                     ok, msg = check_totals(page, data, mapping, tolerance)

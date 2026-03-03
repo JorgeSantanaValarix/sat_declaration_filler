@@ -15,6 +15,8 @@
   "_draft_trash": ["[aria-label*='eliminar']", "[title*='Eliminar']", "[title*='eliminar']", "button:has(svg)", ".fa-trash", "[class*='trash']", "a:has(svg)"],
   "_popup_eliminar_si": ["button:has-text('sí')", "button:has-text('Sí')", "[role='dialog'] >> button:has-text('sí')"],
   "_select_obligation_isr": ["text=ISR simplificado de confianza. Personas físicas", "a:has-text('ISR simplificado de confianza')", "[data-obligation='isr']", "button:has-text('ISR simplificado')"],
+  "_btn_administracion_declaracion": ["button:has-text('ADMINISTRACIÓN DE LA DECLARACIÓN')", "a:has-text('ADMINISTRACIÓN DE LA DECLARACIÓN')", "[role='button']:has-text('ADMINISTRACIÓN DE LA DECLARACIÓN')"],
+  "_select_obligation_iva": ["text=IVA simplificado de confianza", "a:has-text('IVA simplificado de confianza')", "[data-obligation='iva']", "button:has-text('IVA simplificado')"],
   "_isr_ingresos_copropiedad": ["#457select7", "select[id='457select7']", "label=¿Los ingresos fueron obtenidos a través de copropiedad?"],
   "_isr_ingresos_capturar_descuentos": ["#contenedor-457modal9 >> a:has-text('CAPTURAR')", "#contenedor-457modal9 >> a:has-text('Capturar')", "#contenedor-457modal9 a.btn-detalle", "text=Descuentos >> .. >> a:has-text('CAPTURAR')", "text=Descuentos >> .. >> a:has-text('Capturar')"],
   "_isr_ingresos_disminuir": ["#457select48", "select[id='457select48']", "label=¿Tienes ingresos a disminuir?"],
