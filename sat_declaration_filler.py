@@ -3460,7 +3460,7 @@ def _fill_pago_custom_dropdown(page: Page, label_substring: str, option_text: st
         label_el = None
         for el in page.get_by_text(re.compile(re.escape(label_substring), re.I)).all():
             try:
-                if el.is_visible():
+                if el.is_visible(timeout=800):
                     if el.locator("xpath=ancestor::*[contains(@class,'modal') or @role='dialog']").count() > 0:
                         continue
                     label_el = el
@@ -3508,7 +3508,7 @@ def _fill_pago_custom_dropdown(page: Page, label_substring: str, option_text: st
                     continue
                 for i in range(loc.count()):
                     el = loc.nth(i)
-                    if el.is_visible():
+                    if el.is_visible(timeout=600):
                         trigger = el
                         break
                 if trigger is not None:
