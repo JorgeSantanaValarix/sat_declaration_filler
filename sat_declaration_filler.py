@@ -4004,7 +4004,10 @@ def run(
                     finally:
                         _run_context = None
                         time.sleep(0.5)  # Let Playwright pending ops settle before close (avoids greenlet thread errors)
-                        # Skip logout in test cleanup to avoid blocking (Cerrar may be missing or covered); close page then context/browser so script exits
+                        try:
+                            logout_sat(page, mapping)
+                        except Exception as e:
+                            LOG.debug("Test cleanup logout: %s", e)
                         try:
                             page.close()
                         except Exception as e:
@@ -4063,7 +4066,10 @@ def run(
                     finally:
                         _run_context = None
                         time.sleep(0.5)  # Let Playwright pending ops settle before close (avoids greenlet thread errors)
-                        # Skip logout in test cleanup to avoid blocking (Cerrar may be missing or covered); close page then context/browser so script exits
+                        try:
+                            logout_sat(page, mapping)
+                        except Exception as e:
+                            LOG.debug("Test cleanup logout: %s", e)
                         try:
                             page.close()
                         except Exception as e:
@@ -4137,7 +4143,10 @@ def run(
                     finally:
                         _run_context = None
                         time.sleep(0.5)  # Let Playwright pending ops settle before close (avoids greenlet thread errors)
-                        # Skip logout in test cleanup to avoid blocking (Cerrar may be missing or covered); close page then context/browser so script exits
+                        try:
+                            logout_sat(page, mapping)
+                        except Exception as e:
+                            LOG.debug("Test cleanup logout: %s", e)
                         try:
                             page.close()
                         except Exception as e:
@@ -4209,6 +4218,10 @@ def run(
                         _run_context = None
                         time.sleep(0.5)
                         try:
+                            logout_sat(page, mapping)
+                        except Exception as e:
+                            LOG.debug("Test cleanup logout: %s", e)
+                        try:
                             page.close()
                         except Exception as e:
                             LOG.debug("Page close: %s", e)
@@ -4277,7 +4290,10 @@ def run(
                     finally:
                         _run_context = None
                         time.sleep(0.5)  # Let Playwright pending ops settle before close (avoids greenlet thread errors)
-                        # Skip logout in test cleanup to avoid blocking (Cerrar may be missing or covered); close page then context/browser so script exits
+                        try:
+                            logout_sat(page, mapping)
+                        except Exception as e:
+                            LOG.debug("Test cleanup logout: %s", e)
                         try:
                             page.close()
                         except Exception as e:
