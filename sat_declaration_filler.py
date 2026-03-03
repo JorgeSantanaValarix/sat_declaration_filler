@@ -916,23 +916,23 @@ def click_administracion_declaracion(page: Page, mapping: dict) -> bool:
     ok = _try_click(page, mapping, "_btn_administracion_declaracion")
     if ok:
         LOG.info("IVA: clicked 'ADMINISTRACIÓN DE LA DECLARACIÓN' (mapping)")
-        page.wait_for_timeout(1500)
+        page.wait_for_timeout(500)
         return True
     for btn in page.get_by_role("button", name=re.compile(r"ADMINISTRACIÓN\s+DE\s+LA\s+DECLARACIÓN", re.I)).all():
         try:
             if btn.is_visible():
-                btn.click(timeout=3000)
+                btn.click(timeout=2000)
                 LOG.info("IVA: clicked 'ADMINISTRACIÓN DE LA DECLARACIÓN' (button role)")
-                page.wait_for_timeout(1500)
+                page.wait_for_timeout(500)
                 return True
         except Exception:
             continue
     for elem in page.get_by_text(re.compile(r"ADMINISTRACIÓN\s+DE\s+LA\s+DECLARACIÓN", re.I)).all():
         try:
             if elem.is_visible() and elem.locator("xpath=ancestor::*[contains(@class,'modal') or @role='dialog']").count() == 0:
-                elem.click(timeout=3000)
+                elem.click(timeout=2000)
                 LOG.info("IVA: clicked 'ADMINISTRACIÓN DE LA DECLARACIÓN' (text)")
-                page.wait_for_timeout(1500)
+                page.wait_for_timeout(500)
                 return True
         except Exception:
             continue
@@ -946,14 +946,14 @@ def open_obligation_iva(page: Page, mapping: dict) -> bool:
     ok = _try_click(page, mapping, "_select_obligation_iva")
     if ok:
         LOG.info("IVA: clicked 'IVA simplificado de confianza' (mapping)")
-        page.wait_for_timeout(1500)
+        page.wait_for_timeout(500)
         return True
     for elem in page.get_by_text(re.compile(r"IVA\s+simplificado\s+de\s+confianza", re.I)).all():
         try:
             if elem.is_visible() and elem.locator("xpath=ancestor::*[contains(@class,'modal') or @role='dialog']").count() == 0:
-                elem.click(timeout=3000)
+                elem.click(timeout=2000)
                 LOG.info("IVA: clicked 'IVA simplificado de confianza' (text)")
-                page.wait_for_timeout(1500)
+                page.wait_for_timeout(500)
                 return True
         except Exception:
             continue
@@ -1249,31 +1249,31 @@ def _fill_input_next_to_label(
             except Exception:
                 return ""
         try:
-            inp.scroll_into_view_if_needed(timeout=1000)
+            inp.scroll_into_view_if_needed(timeout=600)
             inp.click()
-            page_for_wait.wait_for_timeout(100)
-            inp.fill("")
-            page_for_wait.wait_for_timeout(80)
-            inp.fill(val)
-            page_for_wait.wait_for_timeout(150)
-            if _values_match(_get_val(), val):
-                return True
-            inp.click()
-            page_for_wait.wait_for_timeout(80)
-            page_for_wait.keyboard.press("Control+a")
             page_for_wait.wait_for_timeout(50)
-            page_for_wait.keyboard.type(val, delay=50)
-            page_for_wait.wait_for_timeout(150)
+            inp.fill("")
+            page_for_wait.wait_for_timeout(40)
+            inp.fill(val)
+            page_for_wait.wait_for_timeout(80)
             if _values_match(_get_val(), val):
                 return True
             inp.click()
+            page_for_wait.wait_for_timeout(40)
+            page_for_wait.keyboard.press("Control+a")
+            page_for_wait.wait_for_timeout(30)
+            page_for_wait.keyboard.type(val, delay=30)
             page_for_wait.wait_for_timeout(80)
-            inp.press_sequentially(val, delay=60)
-            page_for_wait.wait_for_timeout(150)
+            if _values_match(_get_val(), val):
+                return True
+            inp.click()
+            page_for_wait.wait_for_timeout(40)
+            inp.press_sequentially(val, delay=40)
+            page_for_wait.wait_for_timeout(80)
             if _values_match(_get_val(), val):
                 return True
             inp.evaluate("""el => { el.value = arguments[0]; el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); }""", val)
-            page_for_wait.wait_for_timeout(100)
+            page_for_wait.wait_for_timeout(50)
             return _values_match(_get_val(), val)
         except Exception:
             return False
@@ -1281,7 +1281,7 @@ def _fill_input_next_to_label(
     # Strategy 0: get_by_label with exact=False (same as ISR _try_fill when selector is "label=...")
     try:
         control = page_or_scope.get_by_label(label_substring, exact=False).first
-        control.wait_for(state="visible", timeout=800)
+        control.wait_for(state="visible", timeout=500)
         tag = control.evaluate("el => (el && el.tagName) ? el.tagName.toLowerCase() : ''")
         if tag in ("input", "textarea", ""):
             if not control.get_attribute("disabled") and _set_value(control, value_str):
@@ -1294,7 +1294,7 @@ def _fill_input_next_to_label(
         if loc.count() <= occurrence:
             return False
         label_el = loc.nth(occurrence)
-        label_el.wait_for(state="visible", timeout=800)
+        label_el.wait_for(state="visible", timeout=500)
     except Exception:
         return False
     # Only skip when label is inside a modal/dialog and we are searching the full page (avoid matching elements in a popup when we want main page). When scope is the dialog, we want to match labels inside it.
@@ -2953,10 +2953,10 @@ def fill_iva_simplificado(page: Page, mapping: dict, data: dict) -> None:
     LOG.info("===== IVA simplificado de confianza (central) =====")
     if not click_administracion_declaracion(page, mapping):
         LOG.warning("IVA simplificado: could not click ADMINISTRACIÓN DE LA DECLARACIÓN")
-    page.wait_for_timeout(1500)
+    page.wait_for_timeout(400)
     if not open_obligation_iva(page, mapping):
         LOG.warning("IVA simplificado: could not click IVA simplificado de confianza")
-    page.wait_for_timeout(1500)
+    page.wait_for_timeout(400)
     fill_iva_simplificado_determinacion(page, mapping, data)
     LOG.info("===== IVA simplificado de confianza (central) complete =====")
     LOG.info("")
@@ -2969,12 +2969,12 @@ def _fill_iva_popup_input_by_position(dialog_scope, page_for_wait: Page, step_1b
             cur = (inp.input_value() or inp.get_attribute("value") or "").strip()
             if cur == val or (cur.replace(",", "") == val.replace(",", "")):
                 return True
-            inp.scroll_into_view_if_needed(timeout=500)
+            inp.scroll_into_view_if_needed(timeout=400)
             inp.click()
-            page_for_wait.wait_for_timeout(80)
+            page_for_wait.wait_for_timeout(40)
             inp.fill("")
             inp.fill(val)
-            page_for_wait.wait_for_timeout(150)
+            page_for_wait.wait_for_timeout(80)
             return (inp.input_value() or "").strip() == val or (inp.input_value() or "").replace(",", "") == val.replace(",", "")
         except Exception:
             return False
@@ -3014,12 +3014,12 @@ def _fill_iva_input_by_position(
             cur = (inp.input_value() or inp.get_attribute("value") or "").strip()
             if cur == val or (cur.replace(",", "") == val.replace(",", "")):
                 return True
-            inp.scroll_into_view_if_needed(timeout=500)
+            inp.scroll_into_view_if_needed(timeout=400)
             inp.click()
-            page_for_wait.wait_for_timeout(80)
+            page_for_wait.wait_for_timeout(40)
             inp.fill("")
             inp.fill(val)
-            page_for_wait.wait_for_timeout(150)
+            page_for_wait.wait_for_timeout(80)
             return (inp.input_value() or "").strip() == val or (inp.input_value() or "").replace(",", "") == val.replace(",", "")
         except Exception:
             return False
@@ -3063,13 +3063,13 @@ def fill_iva_simplificado_determinacion(page: Page, mapping: dict, data: dict) -
 
     # Wait for IVA form (Determinación)
     LOG.info("IVA Determinación: waiting for IVA form to load")
-    page.wait_for_timeout(800)
+    page.wait_for_timeout(300)
     try:
-        page.get_by_text(re.compile(r"IVA\s+simplificado\s+de\s+confianza", re.I)).first.wait_for(state="visible", timeout=5000)
+        page.get_by_text(re.compile(r"IVA\s+simplificado\s+de\s+confianza", re.I)).first.wait_for(state="visible", timeout=3000)
         LOG.info("IVA Determinación: IVA form title visible")
     except Exception:
         LOG.debug("IVA Determinación: IVA form title wait skipped or timed out")
-    page.wait_for_timeout(400)
+    page.wait_for_timeout(150)
 
     # Scope to Determinación tab content to avoid matching hidden/duplicate elements from other tabs
     iva_scope = scope
@@ -3079,7 +3079,7 @@ def fill_iva_simplificado_determinacion(page: Page, mapping: dict, data: dict) -
             page.locator("[role='tabpanel']").filter(has=page.get_by_text("Actividades gravadas", exact=False)).first,
             page.locator(".tab-pane, [class*='tabpanel'], [class*='tab-content']").filter(has=page.get_by_text("Actividades gravadas", exact=False)).first,
         ]:
-            if candidate.count() > 0 and candidate.first.is_visible(timeout=500):
+            if candidate.count() > 0 and candidate.first.is_visible(timeout=300):
                 iva_scope = candidate.first
                 LOG.info("IVA Determinación: using tabpanel scope for field lookup")
                 break
@@ -3110,7 +3110,7 @@ def fill_iva_simplificado_determinacion(page: Page, mapping: dict, data: dict) -
             LOG.info("IVA Determinación: step %s/5 — filled %r", step, form_label)
         else:
             LOG.warning("IVA Determinación: step %s/5 — could not fill %r", step, form_label)
-        page.wait_for_timeout(200)
+        page.wait_for_timeout(80)
 
     # Click CAPTURAR next to *IVA acreditable del periodo (reuse ISR logic: iterate CAPTURARs, match row by label text)
     LOG.info("IVA Determinación: step — clicking CAPTURAR next to '*IVA acreditable del periodo'")
@@ -3125,12 +3125,12 @@ def fill_iva_simplificado_determinacion(page: Page, mapping: dict, data: dict) -
         LOG.warning("IVA Determinación: could not click CAPTURAR for IVA acreditable del periodo")
     else:
         LOG.info("IVA Determinación: CAPTURAR clicked; waiting for popup")
-        page.wait_for_timeout(600)
+        page.wait_for_timeout(250)
         # Wait for popup
         dialog = None
         for _ in range(8):
             try:
-                if page.get_by_role("dialog").first.is_visible(timeout=300):
+                if page.get_by_role("dialog").first.is_visible(timeout=200):
                     dialog = page.get_by_role("dialog").first
                     LOG.info("IVA Determinación: popup visible (dialog role)")
                     break
@@ -3140,7 +3140,7 @@ def fill_iva_simplificado_determinacion(page: Page, mapping: dict, data: dict) -
                     break
             except Exception:
                 pass
-            page.wait_for_timeout(400)
+            page.wait_for_timeout(150)
         if dialog is None:
             dialog = page
             LOG.debug("IVA Determinación: using page as popup scope")
@@ -3159,7 +3159,7 @@ def fill_iva_simplificado_determinacion(page: Page, mapping: dict, data: dict) -
             LOG.info("IVA Determinación popup: filled '%s'", label_grav)
         else:
             LOG.warning("IVA Determinación popup: could not fill '%s'", label_grav)
-        page.wait_for_timeout(150)
+        page.wait_for_timeout(60)
         # *IVA acreditable por actividades mixtas = 0
         label_mixtas = "IVA acreditable por actividades mixtas"
         LOG.info("IVA Determinación popup: filling '%s' with 0", label_mixtas)
@@ -3172,11 +3172,11 @@ def fill_iva_simplificado_determinacion(page: Page, mapping: dict, data: dict) -
             LOG.info("IVA Determinación popup: filled '%s' with 0", label_mixtas)
         else:
             LOG.warning("IVA Determinación popup: could not fill '%s'", label_mixtas)
-        page.wait_for_timeout(200)
+        page.wait_for_timeout(60)
         LOG.info("IVA Determinación popup: clicking CERRAR")
-        page.get_by_role("button", name=re.compile(r"CERRAR", re.I)).first.click(timeout=2000)
+        page.get_by_role("button", name=re.compile(r"CERRAR", re.I)).first.click(timeout=1500)
         LOG.info("IVA Determinación popup: CERRAR clicked; popup closed")
-        page.wait_for_timeout(800)
+        page.wait_for_timeout(300)
 
     # GUARDAR main form
     LOG.info("IVA Determinación: clicking GUARDAR (main form)")
@@ -3188,12 +3188,12 @@ def fill_iva_simplificado_determinacion(page: Page, mapping: dict, data: dict) -
     ]:
         try:
             first_btn = loc.first
-            first_btn.wait_for(state="visible", timeout=4000)
+            first_btn.wait_for(state="visible", timeout=2500)
             if first_btn.locator("xpath=ancestor::*[contains(@class,'modal') or @role='dialog']").count() > 0:
                 continue
             if first_btn.get_attribute("disabled"):
                 continue
-            first_btn.click(timeout=3000)
+            first_btn.click(timeout=2000)
             guardar_ok = True
             LOG.info("IVA Determinación: GUARDAR clicked")
             break
@@ -3202,22 +3202,22 @@ def fill_iva_simplificado_determinacion(page: Page, mapping: dict, data: dict) -
     if not guardar_ok:
         LOG.warning("IVA Determinación: could not click GUARDAR")
     else:
-        page.wait_for_timeout(1500)
-        page.wait_for_load_state("domcontentloaded", timeout=5000)
         page.wait_for_timeout(500)
+        page.wait_for_load_state("domcontentloaded", timeout=4000)
+        page.wait_for_timeout(200)
         LOG.info("IVA Determinación: waiting for load after GUARDAR complete")
     # Click Pago tab (next to Determinación)
     LOG.info("IVA: step — clicking Pago tab (next to Determinación)")
     pago_clicked = False
     def _try_click_pago(elem, *, force: bool = False) -> bool:
         try:
-            elem.wait_for(state="visible", timeout=2000)
-            elem.scroll_into_view_if_needed(timeout=2000)
+            elem.wait_for(state="visible", timeout=1200)
+            elem.scroll_into_view_if_needed(timeout=1000)
             if force:
-                elem.click(force=True, timeout=3000)
+                elem.click(force=True, timeout=2000)
             else:
-                elem.click(timeout=3000)
-            page.wait_for_timeout(500)
+                elem.click(timeout=2000)
+            page.wait_for_timeout(200)
             return True
         except Exception:
             return False
@@ -3239,23 +3239,23 @@ def fill_iva_simplificado_determinacion(page: Page, mapping: dict, data: dict) -
                 continue
     if pago_clicked:
         LOG.info("IVA: Pago tab clicked")
-        page.wait_for_timeout(800)
-        page.wait_for_load_state("domcontentloaded", timeout=5000)
-        page.wait_for_timeout(500)
+        page.wait_for_timeout(300)
+        page.wait_for_load_state("domcontentloaded", timeout=4000)
+        page.wait_for_timeout(200)
         LOG.info("IVA Pago: selecting *¿Tienes compensaciones por aplicar? → No (reuse ISR dropdown logic)")
         comp_ok = _fill_pago_custom_dropdown(page, "compensaciones por aplicar", "No")
         if comp_ok:
             LOG.info("IVA Pago: dropdown *¿Tienes compensaciones por aplicar? set to No")
         else:
             LOG.warning("IVA Pago: could not set *¿Tienes compensaciones por aplicar? to No")
-        page.wait_for_timeout(120)
+        page.wait_for_timeout(60)
         LOG.info("IVA Pago: selecting *¿Tienes estímulos por aplicar? → No (reuse ISR dropdown logic)")
         estim_ok = _fill_pago_custom_dropdown(page, "estímulos por aplicar", "No")
         if estim_ok:
             LOG.info("IVA Pago: dropdown *¿Tienes estímulos por aplicar? set to No")
         else:
             LOG.warning("IVA Pago: could not set *¿Tienes estímulos por aplicar? to No")
-        page.wait_for_timeout(200)
+        page.wait_for_timeout(80)
         LOG.info("IVA Pago: clicking GUARDAR")
         guardar_pago_ok = False
         for loc in [
@@ -3265,21 +3265,21 @@ def fill_iva_simplificado_determinacion(page: Page, mapping: dict, data: dict) -
         ]:
             try:
                 first_btn = loc.first
-                first_btn.wait_for(state="visible", timeout=4000)
+                first_btn.wait_for(state="visible", timeout=2500)
                 if first_btn.locator("xpath=ancestor::*[contains(@class,'modal') or @role='dialog']").count() > 0:
                     continue
                 if first_btn.get_attribute("disabled"):
                     continue
-                first_btn.click(timeout=3000)
+                first_btn.click(timeout=2000)
                 guardar_pago_ok = True
                 LOG.info("IVA Pago: GUARDAR clicked")
                 break
             except Exception:
                 continue
         if guardar_pago_ok:
-            page.wait_for_timeout(1000)
-            page.wait_for_load_state("domcontentloaded", timeout=5000)
-            page.wait_for_timeout(500)
+            page.wait_for_timeout(400)
+            page.wait_for_load_state("domcontentloaded", timeout=4000)
+            page.wait_for_timeout(200)
             LOG.info("IVA Pago: load complete after GUARDAR; IVA simplificado flow complete (then logout/end script)")
         else:
             LOG.warning("IVA Pago: could not click GUARDAR")
