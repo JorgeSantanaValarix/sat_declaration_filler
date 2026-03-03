@@ -37,11 +37,13 @@ See **PLAN_FORM_FILL_AUTOMATION.md** for the full plan and flow.
    ```bash
    copy config.example.json config.json
    ```
-   Then edit `config.json`: set **db_connection_string** and **fiel_certificate_base_path**.
+   Then edit `config.json`: set **db_connection_string** and **fiel_certificate_base_path**. For SAT label/button text and declaration flow, see **Label and flow configuration** below.
 
 5. **(Optional)** Update `form_field_mapping.json` with real SAT selectors after inspecting the portal (see “Finding selectors” below).
 
-### Run the script
+### Normal run (production)
+
+Full flow: login (e.firma from DB) → initial form → ISR (Ingresos, Determinación, Pago) → IVA (Determinación, Pago) → check totals → **Enviar declaración** → logout.
 
 From the project folder (with the same venv active if you use one):
 
@@ -49,8 +51,9 @@ From the project folder (with the same venv active if you use one):
 python sat_declaration_filler.py --workbook "C:\path\to\202501_RFC_Hoja de Trabajo.xlsx" --company-id 1 --branch-id 2
 ```
 
-- Replace the path with the **full path** to your Excel workpaper (Impuestos tab).
-- Use the **company ID** and **branch ID** that correspond to the taxpayer in Contaayuda (used to fetch e.firma from the DB).
+- **--workbook / -w** — Full path to the Excel workpaper (Impuestos tab). Required.
+- **--company-id / -c** — Company ID in Contaayuda (e.firma lookup from DB). Required.
+- **--branch-id / -b** — Branch ID in Contaayuda (e.firma lookup from DB). Required.
 
 **Short form:**
 
@@ -58,14 +61,94 @@ python sat_declaration_filler.py --workbook "C:\path\to\202501_RFC_Hoja de Traba
 python sat_declaration_filler.py -w "C:\path\to\workpaper.xlsx" -c 1 -b 2
 ```
 
-**With custom config or mapping file:**
+**Custom config or mapping:**
 
 ```bash
-python sat_declaration_filler.py --workbook "C:\path\to\workpaper.xlsx" --company-id 1 --branch-id 2 --config C:\other\config.json --mapping C:\other\form_field_mapping.json
+python sat_declaration_filler.py -w "C:\path\to\workpaper.xlsx" -c 1 -b 2 --config C:\other\config.json --mapping C:\other\form_field_mapping.json
 ```
 
-- **Exit code 0** — declaration was sent (or send was triggered).
+### Test modes (--test-*)
+
+Test modes use **e.firma from config** (test_cer_path, test_key_path, test_password, test_rfc) — no database. Set these in `config.json` before running.
+
+| Option | Description | Workbook |
+|--------|-------------|----------|
+| **--test-login** | Login only (e.firma, Enviar). Browser open ~10s. | Not required |
+| **--test-initial-form** | Login + fill initial form (Ejercicio, Periodicidad, Período, Tipo). Uses test_year, test_month, test_periodicidad from config. | Not required |
+| **--test-full** | Full flow as normal (login → initial form → ISR → IVA) but **no send**, no totals check. Browser open 10s at end, then logout and close. | Required: `-w` or test_workbook_path in config |
+| **--test-phase3** | Login + initial form + ISR section only (stops before IVA). Browser open 10s. | Required |
+| **--test-iva** | Login + initial form + IVA only (skip ISR). Browser open 10s. | Required |
+
+**Examples:**
+
+```bash
+# Login only (no workbook, no DB)
+python sat_declaration_filler.py --test-login
+
+# Initial form only (year/month/periodicidad from config)
+python sat_declaration_filler.py --test-initial-form
+
+# Full flow without sending (same as normal run but no Enviar declaración)
+python sat_declaration_filler.py --test-full -w "C:\path\to\workpaper.xlsx"
+
+# ISR only (through Phase 5 Pago), then stop
+python sat_declaration_filler.py --test-phase3 -w "C:\path\to\workpaper.xlsx"
+
+# IVA only (Determinación + Pago tab)
+python sat_declaration_filler.py --test-iva -w "C:\path\to\workpaper.xlsx"
+```
+
+Workbook for tests can be set in config as **test_workbook_path** (or **test.workbook_path**); then you can omit `-w` for `--test-full`, `--test-phase3`, and `--test-iva`.
+
+**Test config:** Set **test_cer_path**, **test_key_path**, **test_password** (optional: **test_rfc**) in `config.json`. For **--test-initial-form** use **test_year**, **test_month**, **test_periodicidad**. For **--test-full**, **--test-phase3**, **--test-iva** set **test_workbook_path** or pass **-w**.
+
+(Test phase 2 and Test full details are in the table above.)
+
+To test login plus filling the initial form (Ejercicio, Periodicidad, Período, Tipo de declaración) without using an Excel file:
+
+1. In `config.json`, set **test_year**, **test_month**, **test_periodicidad** (e.g. 2026, 1, 1). Optional; defaults: current year, month 1, periodicidad 1.
+2. Run:
+
+```bash
+python sat_declaration_filler.py --test-initial-form
+```
+
+The script will log in (using test_cer_path / test_key_path / test_password), navigate to “Declaración Provisional o Definitiva”, fill the initial form from config, and keep the browser open 15 seconds. No workbook or DB is required.
+
+**Test full (up to initial form only; Excel + config, no DB)**
+
+To test login and the initial “Declaración Provisional o Definitiva” form only (no ISR/IVA fill, no totals check, no send): e.firma from config, initial form from Excel (year/month from filename `YYYYMM_...`, periodicidad from Impuestos sheet).
+
+Set **test_workbook_path** in `config.json` to the full path of your Excel workpaper. Then run:
+
+```bash
+python sat_declaration_filler.py --test-full
+```
+
+Or pass the workbook on the command line (overrides config):
+
+```bash
+python sat_declaration_filler.py --test-full --workbook "C:\path\to\202601_RFC_Hoja de Trabajo.xlsx"
+```
+
+The script will login, navigate to the declaration, fill the initial form (Ejercicio, Periodicidad, Período, Tipo) from the Excel, then stop and leave the browser open 15 seconds for inspection.
+
+- **Exit code 0** — success (normal run: declaration sent; test: step completed).
 - **Exit code 1** — error or totals mismatch; check console output and `sat_declaration_filler.log`.
+
+## Label and flow configuration (config.json)
+
+When SAT changes button labels, section titles, or question text, update `config.json` instead of changing code. Copy the relevant keys from `config.example.json` and adjust values.
+
+| Key | Purpose |
+|-----|--------|
+| **sat_ui** | Object of UI text patterns: login (e.firma, Enviar), navigation, initial form labels, ISR (copropiedad, section labels, VER DETALLE, Determinación/Pago tab names, compensaciones/estímulos), IVA, GUARDAR, CERRAR, etc. |
+| **declaration_flow** | Array for obligation order, e.g. `["isr", "iva"]`. (Reserved for future use; run order is currently fixed.) |
+| **isr_determinacion_labels** | Array of Excel column D labels for ISR Determinación, in form fill order. |
+| **iva_determinacion_fields** | Array of `{"excel_label": "...", "form_label": "..."}` for IVA Determinación fields in fill order. |
+| **iva_pago_labels** | Array of Excel labels for IVA Pago section, in order. |
+
+Example: set `"sat_ui": { "isr_ingresos_copropiedad": "*¿Los ingresos fueron obtenidos por copropiedad?", ... }` to match SAT wording. Full keys and defaults: **config.example.json** and **docs/PLAN_CONFIG_ISR_IVA_LABELS_AND_SEQUENCE.md**.
 
 ## Database configuration (SQL Server on Windows)
 
@@ -121,6 +204,25 @@ If `config.json` does not exist, copy it from `config.example.json` and then edi
 
    Replace `your_server`, `your_db`, `user`, and `password` with your real values. Do **not** commit `config.json` to git (it is in `.gitignore`); it stays only on your PC.
 
+### Where Contaayuda stores e.firma (password and .cer/.key location)
+
+In **Contaayuda** the same data you see under **Empresas → Perfiles → Accesos al SAT y FIEL** (name of .cer file, .key file, and "Contraseña") comes from the **database**:
+
+- **Password:** Stored in the DB column **`FIELTIMBARDOPASSWORD`** (returned by the stored procedure `[GET_AUTOMATICTAXDECLARATION_CUSTOMERDATA]`). When you set or change "Contraseña" in the profile, Contaayuda saves it via the DB (e.g. `[UPDATE_CUSTOMER_FIELCERTIFICATES]` / related SPs). The script reads this column; there is no use of a `Pistas_FIEL_*.txt` file in the current design.
+- **.cer and .key file names:** Stored in the DB as **`FIELXMLCERTIFICATE`** and **`FIELXMLKEY`** (only the file names, e.g. `taxpayer.cer`, `taxpayer.key`).
+- **.cer and .key file location on disk:** **Not** in the DB. Contaayuda builds the path from:
+  - App setting **`FielCertificate`** (in Contaayuda `Web.config`, e.g. `/SysTrack/Fiel/`), and
+  - **CompanyId** and **BranchId** and the file name from the DB.  
+  Full path on the server = **ApplicationPhysicalPath** + **FielCertificate** + CompanyId + "/" + BranchId + "/" + filename.
+
+If on your Windows PC the FIEL files are under **`C:\Ketan\Fiel\1000\1`** (for company 1000, branch 1), then in **config.json** you must set:
+
+```json
+"fiel_certificate_base_path": "C:\\Ketan\\Fiel"
+```
+
+The script will then look for the .cer and .key at `C:\Ketan\Fiel\<CompanyId>\<BranchId>\<filename from DB>`.
+
 ### Summary
 
 | What            | Where / how                                                                 |
@@ -129,6 +231,8 @@ If `config.json` does not exist, copy it from `config.example.json` and then edi
 | DB key          | `db_connection_string` inside `config.json`                                  |
 | Format          | ODBC connection string for SQL Server (see examples above)                    |
 | Same machine?  | Script and SQL Server can be on the same Windows PC or different; use SERVER= accordingly. |
+| Password        | In Contaayuda DB column `FIELTIMBARDOPASSWORD` (same as "Contraseña" in Empresas → Perfiles → Accesos al SAT y FIEL). |
+| .cer/.key path  | Set `fiel_certificate_base_path` in config.json to the folder that contains `CompanyId\BranchId\` (e.g. `C:\Ketan\Fiel`). |
 
 ## Setup (reference)
 
