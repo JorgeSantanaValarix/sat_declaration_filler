@@ -622,8 +622,10 @@ def _try_fill(scope: Page | Frame, page_for_wait: Page, mapping: dict, key: str,
 
 
 # Phrases that indicate SAT portal error (page down, 500, maintenance). Checked case-insensitive.
+# Use "http 500" / "error 500" instead of bare "500" to avoid false positives from amounts/IDs on page.
 _SAT_ERROR_PHRASES = (
-    "500",
+    "http 500",
+    "error 500",
     "internal server error",
     "error del servidor",
     "servidor no disponible",
@@ -2379,139 +2381,119 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict, sat_ui: dict |
         page.wait_for_timeout(PHASE3_SECTION_GAP_MS)
     LOG.info("")
     LOG.info("===== Phase 3: sección 6 - Total de ingresos percibidos por la actividad =====")
-    # 6. Total de ingresos percibidos por la actividad: press CAPTURAR → popup "Total de ingresos efectivamente cobrados" → for each Excel row (Actividad empresarial, Actividad profesional, Uso o goce temporal) with value != "-": AGREGAR → Concepto → Importe → GUARDAR → ACEPTAR → then CERRAR
-    try:
-        capturar_clicked = _try_click(page, mapping, "_isr_ingresos_capturar_total")
-        if not capturar_clicked:
-            capturar_clicked = _click_capturar_total_percibidos(page, scope)
-        if not capturar_clicked:
-            capturar_clicked = _click_capturar_next_to_label(scope, "Total de ingresos percibidos por la actividad")
-        if not capturar_clicked:
-            capturar_clicked = _click_capturar_next_to_label(scope, "Total de ingresos percibidos")
-        if not capturar_clicked:
-            raise RuntimeError("Could not click Total percibidos CAPTURAR link")
-        LOG.info("Phase 3: Total percibidos CAPTURAR pressed")
-        page.wait_for_timeout(200)
-        # Resolve "Total de ingresos efectivamente cobrados" popup dialog
-        dialog = None
-        for use_last, dialog_loc, to_ms in [
-            (False, page.get_by_role("dialog"), 900),
-            (False, page.locator("[role='dialog']"), 600),
-            (True, page.locator("div").filter(has_text=re.compile(r"Total de ingresos efectivamente cobrados", re.I)).filter(has_text=re.compile(r"Concepto|AGREGAR|Monto", re.I)), 450),
-            (True, page.locator("div").filter(has_text=re.compile(r"Total de ingresos efectivamente cobrados", re.I)).filter(has=page.locator("select")), 400),
-        ]:
-            try:
-                d = dialog_loc.last if use_last else dialog_loc.first
-                d.wait_for(state="visible", timeout=to_ms)
-                dialog = d
-                break
-            except Exception:
-                continue
-        if dialog is None:
-            dialog = page
-        # Three Excel labels (col D or E) → SAT Concepto dropdown option; only add when value is not "-" or missing
-        total_percibidos_entries = [
-            ("Actividad empresarial", "Actividad empresarial"),
-            ("Actividad profesional (honorarios)", "Servicios profesionales (Honorarios)"),
-            ("Uso o goce temporal de bienes (arrendamiento)", "Uso o goce temporal de bienes"),
-        ]
-        for excel_label, sat_concepto in total_percibidos_entries:
-            raw = label_map.get(excel_label)
-            if raw is None:
-                continue
-            # Skip when Excel shows "-" or the parsed numeric value is zero
-            if isinstance(raw, str) and str(raw).strip() == "-":
-                continue
-            parsed = _parse_currency(raw)
-            if abs(parsed) < 0.005:
-                continue
-            importe_str = str(int(round(parsed)))
-            LOG.info("Phase 3: Total percibidos adding entry: excel_label=%r, sat_concepto=%r, importe=%s", excel_label, sat_concepto, importe_str)
-            try:
-                if dialog != page:
-                    dialog.get_by_role("button", name=re.compile(r"AGREGAR", re.I)).first.click(timeout=800)
-                    page.wait_for_timeout(50)
-            except Exception as e_ag:
-                LOG.warning("Phase 3: Total percibidos AGREGAR for %r: %s", excel_label, e_ag)
-                continue
-            concepto_ok = False
-            try:
-                loc_concepto = dialog.get_by_text(re.compile(r"\*?\s*Concepto", re.I))
-                if loc_concepto.count() == 0:
-                    loc_concepto = dialog.get_by_text("Concepto", exact=False)
-                if loc_concepto.count() > 0:
-                    label_concepto = loc_concepto.first
-                    label_concepto.wait_for(state="visible", timeout=300)
-                    for xpath in [
-                        "xpath=((ancestor::td | ancestor::th)[1])/following-sibling::*//select",
-                        "xpath=(ancestor::tr[1])//select",
-                        "xpath=following-sibling::*//select",
-                        "xpath=..//select",
-                    ]:
-                        try:
-                            concepto_dd = label_concepto.locator(xpath).first
-                            concepto_dd.wait_for(state="visible", timeout=200)
-                            concepto_dd.select_option(label=sat_concepto, timeout=2000)
-                            concepto_ok = True
-                            page.wait_for_timeout(30)
-                            break
-                        except Exception:
-                            continue
-            except Exception:
-                pass
-            if not concepto_ok:
+    # 6. Total de ingresos percibidos por la actividad: press CAPTURAR only when diff > 0 (when diff=0 the CAPTURAR option does not appear on SAT). Then popup "Total de ingresos efectivamente cobrados" → for each Excel row (Actividad empresarial, Actividad profesional, Uso o goce temporal) with value != "-": AGREGAR → Concepto → Importe → GUARDAR → ACEPTAR → then CERRAR
+    if not need_ingresos_adicionales:
+        LOG.info("Phase 3: Total percibidos skipped (diff=%.2f), CAPTURAR not shown on SAT", diferencia_adicionales)
+    else:
+        try:
+            capturar_clicked = _try_click(page, mapping, "_isr_ingresos_capturar_total")
+            if not capturar_clicked:
+                capturar_clicked = _click_capturar_total_percibidos(page, scope)
+            if not capturar_clicked:
+                capturar_clicked = _click_capturar_next_to_label(scope, "Total de ingresos percibidos por la actividad")
+            if not capturar_clicked:
+                capturar_clicked = _click_capturar_next_to_label(scope, "Total de ingresos percibidos")
+            if not capturar_clicked:
+                raise RuntimeError("Could not click Total percibidos CAPTURAR link")
+            LOG.info("Phase 3: Total percibidos CAPTURAR pressed")
+            page.wait_for_timeout(200)
+            # Resolve "Total de ingresos efectivamente cobrados" popup dialog
+            dialog = None
+            for use_last, dialog_loc, to_ms in [
+                (False, page.get_by_role("dialog"), 900),
+                (False, page.locator("[role='dialog']"), 600),
+                (True, page.locator("div").filter(has_text=re.compile(r"Total de ingresos efectivamente cobrados", re.I)).filter(has_text=re.compile(r"Concepto|AGREGAR|Monto", re.I)), 450),
+                (True, page.locator("div").filter(has_text=re.compile(r"Total de ingresos efectivamente cobrados", re.I)).filter(has=page.locator("select")), 400),
+            ]:
                 try:
-                    sel = dialog.locator("select").first
-                    sel.wait_for(state="visible", timeout=300)
-                    sel.select_option(label=sat_concepto, timeout=2000)
-                    concepto_ok = True
-                    page.wait_for_timeout(30)
-                except Exception as e_c:
-                    LOG.warning("Phase 3: Total percibidos Concepto %r: %s", sat_concepto, e_c)
-            if concepto_ok:
-                LOG.info(
-                    "Phase 3: Total percibidos popup: selected Concepto=%r for excel_label=%r",
-                    sat_concepto,
-                    excel_label,
-                )
-            importe_ok = False
-            try:
-                sel_first = dialog.locator("select").first
-                sel_first.wait_for(state="visible", timeout=200)
-                for row_xpath in ["xpath=ancestor::tr[1]", "xpath=ancestor::*[.//input][1]"]:
-                    try:
-                        row = sel_first.locator(row_xpath)
-                        if row.count() == 0:
-                            continue
-                        inp = row.locator("input[type='text'], input[type='number'], input:not([type])").first
-                        inp.wait_for(state="visible", timeout=180)
-                        if inp.get_attribute("disabled") or inp.get_attribute("readonly"):
-                            continue
-                        inp.click()
-                        inp.fill(importe_str)
-                        importe_ok = True
-                        page.wait_for_timeout(25)
-                        break
-                    except Exception:
-                        continue
-            except Exception:
-                pass
-            if not importe_ok:
+                    d = dialog_loc.last if use_last else dialog_loc.first
+                    d.wait_for(state="visible", timeout=to_ms)
+                    dialog = d
+                    break
+                except Exception:
+                    continue
+            if dialog is None:
+                dialog = page
+            # Three Excel labels (col D or E) → SAT Concepto dropdown option; only add when value is not "-" or missing
+            total_percibidos_entries = [
+                ("Actividad empresarial", "Actividad empresarial"),
+                ("Actividad profesional (honorarios)", "Servicios profesionales (Honorarios)"),
+                ("Uso o goce temporal de bienes (arrendamiento)", "Uso o goce temporal de bienes"),
+            ]
+            for excel_label, sat_concepto in total_percibidos_entries:
+                raw = label_map.get(excel_label)
+                if raw is None:
+                    continue
+                # Skip when Excel shows "-" or the parsed numeric value is zero
+                if isinstance(raw, str) and str(raw).strip() == "-":
+                    continue
+                parsed = _parse_currency(raw)
+                if abs(parsed) < 0.005:
+                    continue
+                importe_str = str(int(round(parsed)))
+                LOG.info("Phase 3: Total percibidos adding entry: excel_label=%r, sat_concepto=%r, importe=%s", excel_label, sat_concepto, importe_str)
                 try:
-                    label_importe = dialog.get_by_text("Importe", exact=False).first
-                    label_importe.wait_for(state="visible", timeout=250)
-                    for xpath in [
-                        "xpath=((ancestor::td | ancestor::th)[1])/following-sibling::*//input[not(@disabled)]",
-                        "xpath=(ancestor::tr[1])//input[not(@disabled)]",
-                        "xpath=following-sibling::*//input",
-                    ]:
-                        try:
-                            importe_inp = label_importe.locator(xpath).first
-                            importe_inp.wait_for(state="visible", timeout=180)
-                            if importe_inp.get_attribute("readonly"):
+                    if dialog != page:
+                        dialog.get_by_role("button", name=re.compile(r"AGREGAR", re.I)).first.click(timeout=800)
+                        page.wait_for_timeout(50)
+                except Exception as e_ag:
+                    LOG.warning("Phase 3: Total percibidos AGREGAR for %r: %s", excel_label, e_ag)
+                    continue
+                concepto_ok = False
+                try:
+                    loc_concepto = dialog.get_by_text(re.compile(r"\*?\s*Concepto", re.I))
+                    if loc_concepto.count() == 0:
+                        loc_concepto = dialog.get_by_text("Concepto", exact=False)
+                    if loc_concepto.count() > 0:
+                        label_concepto = loc_concepto.first
+                        label_concepto.wait_for(state="visible", timeout=300)
+                        for xpath in [
+                            "xpath=((ancestor::td | ancestor::th)[1])/following-sibling::*//select",
+                            "xpath=(ancestor::tr[1])//select",
+                            "xpath=following-sibling::*//select",
+                            "xpath=..//select",
+                        ]:
+                            try:
+                                concepto_dd = label_concepto.locator(xpath).first
+                                concepto_dd.wait_for(state="visible", timeout=200)
+                                concepto_dd.select_option(label=sat_concepto, timeout=2000)
+                                concepto_ok = True
+                                page.wait_for_timeout(30)
+                                break
+                            except Exception:
                                 continue
-                            importe_inp.click()
-                            importe_inp.fill(importe_str)
+                except Exception:
+                    pass
+                if not concepto_ok:
+                    try:
+                        sel = dialog.locator("select").first
+                        sel.wait_for(state="visible", timeout=300)
+                        sel.select_option(label=sat_concepto, timeout=2000)
+                        concepto_ok = True
+                        page.wait_for_timeout(30)
+                    except Exception as e_c:
+                        LOG.warning("Phase 3: Total percibidos Concepto %r: %s", sat_concepto, e_c)
+                if concepto_ok:
+                    LOG.info(
+                        "Phase 3: Total percibidos popup: selected Concepto=%r for excel_label=%r",
+                        sat_concepto,
+                        excel_label,
+                    )
+                importe_ok = False
+                try:
+                    sel_first = dialog.locator("select").first
+                    sel_first.wait_for(state="visible", timeout=200)
+                    for row_xpath in ["xpath=ancestor::tr[1]", "xpath=ancestor::*[.//input][1]"]:
+                        try:
+                            row = sel_first.locator(row_xpath)
+                            if row.count() == 0:
+                                continue
+                            inp = row.locator("input[type='text'], input[type='number'], input:not([type])").first
+                            inp.wait_for(state="visible", timeout=180)
+                            if inp.get_attribute("disabled") or inp.get_attribute("readonly"):
+                                continue
+                            inp.click()
+                            inp.fill(importe_str)
                             importe_ok = True
                             page.wait_for_timeout(25)
                             break
@@ -2519,38 +2501,61 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict, sat_ui: dict |
                             continue
                 except Exception:
                     pass
-            if importe_ok:
-                LOG.info(
-                    "Phase 3: Total percibidos popup: filled Importe=%s for excel_label=%r",
-                    importe_str,
-                    excel_label,
-                )
-            if concepto_ok and importe_ok:
-                try:
-                    btn_scope = dialog if dialog != page else page
-                    btn_scope.get_by_role("button", name=re.compile(r"GUARDAR", re.I)).first.click(timeout=600)
-                    page.wait_for_timeout(60)
+                if not importe_ok:
                     try:
-                        confirm_btn = page.get_by_role("button", name=re.compile(r"ACEPTAR", re.I)).first
-                        confirm_btn.wait_for(state="visible", timeout=500)
-                        confirm_btn.click()
-                        page.wait_for_timeout(70)
+                        label_importe = dialog.get_by_text("Importe", exact=False).first
+                        label_importe.wait_for(state="visible", timeout=250)
+                        for xpath in [
+                            "xpath=((ancestor::td | ancestor::th)[1])/following-sibling::*//input[not(@disabled)]",
+                            "xpath=(ancestor::tr[1])//input[not(@disabled)]",
+                            "xpath=following-sibling::*//input",
+                        ]:
+                            try:
+                                importe_inp = label_importe.locator(xpath).first
+                                importe_inp.wait_for(state="visible", timeout=180)
+                                if importe_inp.get_attribute("readonly"):
+                                    continue
+                                importe_inp.click()
+                                importe_inp.fill(importe_str)
+                                importe_ok = True
+                                page.wait_for_timeout(25)
+                                break
+                            except Exception:
+                                continue
                     except Exception:
                         pass
-                except Exception as e_btn:
-                    LOG.warning("Phase 3: Total percibidos GUARDAR/ACEPTAR for %r: %s", excel_label, e_btn)
-            else:
-                LOG.warning("Phase 3: Total percibidos entry not filled (concepto=%s, importe=%s) for %r", concepto_ok, importe_ok, excel_label)
-        # Close the popup
-        try:
-            btn_scope = dialog if dialog != page else page
-            btn_scope.get_by_role("button", name=re.compile(r"CERRAR", re.I)).first.click(timeout=800)
-            LOG.info("Phase 3: Total percibidos popup filled and closed")
-        except Exception as e_close:
-            LOG.warning("Phase 3: Total percibidos CERRAR: %s", e_close)
-        page.wait_for_timeout(50)
-    except Exception as e:
-        LOG.warning("Phase 3: Total percibidos CAPTURAR/popup failed: %s", e)
+                if importe_ok:
+                    LOG.info(
+                        "Phase 3: Total percibidos popup: filled Importe=%s for excel_label=%r",
+                        importe_str,
+                        excel_label,
+                    )
+                if concepto_ok and importe_ok:
+                    try:
+                        btn_scope = dialog if dialog != page else page
+                        btn_scope.get_by_role("button", name=re.compile(r"GUARDAR", re.I)).first.click(timeout=600)
+                        page.wait_for_timeout(60)
+                        try:
+                            confirm_btn = page.get_by_role("button", name=re.compile(r"ACEPTAR", re.I)).first
+                            confirm_btn.wait_for(state="visible", timeout=500)
+                            confirm_btn.click()
+                            page.wait_for_timeout(70)
+                        except Exception:
+                            pass
+                    except Exception as e_btn:
+                        LOG.warning("Phase 3: Total percibidos GUARDAR/ACEPTAR for %r: %s", excel_label, e_btn)
+                else:
+                    LOG.warning("Phase 3: Total percibidos entry not filled (concepto=%s, importe=%s) for %r", concepto_ok, importe_ok, excel_label)
+            # Close the popup
+            try:
+                btn_scope = dialog if dialog != page else page
+                btn_scope.get_by_role("button", name=re.compile(r"CERRAR", re.I)).first.click(timeout=800)
+                LOG.info("Phase 3: Total percibidos popup filled and closed")
+            except Exception as e_close:
+                LOG.warning("Phase 3: Total percibidos CERRAR: %s", e_close)
+            page.wait_for_timeout(50)
+        except Exception as e:
+            LOG.warning("Phase 3: Total percibidos CAPTURAR/popup failed: %s", e)
     LOG.info("Phase 3: Ingresos form fill completed")
 
     # Phase 4: GUARDAR → Determinación tab (to the right of Ingresos) → VER DETALLE (ISR retenido por personas morales) → popup fill "ISR retenido no acreditable" → CERRAR → GUARDAR
