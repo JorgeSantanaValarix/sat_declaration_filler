@@ -1039,7 +1039,8 @@ def transition_initial_to_phase3(page: Page, mapping: dict, sat_ui: dict | None 
 # Post-click wait for ISR/IVA obligation selection; match initial form pacing (80–100 ms between dropdowns).
 _OBLIGATION_CLICK_WAIT_MS = 80
 
-# Textbox fill (ISR/IVA): target ~1s per field. Visible/scroll timeouts and short waits between actions.
+# Textbox fill (ISR/IVA): visible/scroll timeouts must allow SAT form to render; too low (e.g. 200ms) causes
+# label-based fill to fail and forces slow position fallback, longer runtime and flaky fills (e.g. mixtas).
 _TEXTBOX_FILL_VISIBLE_MS = 350
 _TEXTBOX_FILL_WAIT_MS = 25
 # Phase 4 ISR retenido popup: modal can render slower; use longer timeouts so fill succeeds (was broken by aggressive 350ms).
@@ -2707,8 +2708,8 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict, sat_ui: dict |
                             continue
                         elem.scroll_into_view_if_needed(timeout=2000)
                         elem.click(force=True, timeout=3000)
-                        page.wait_for_timeout(1000)
-                        if page.get_by_text(re.compile(re.escape(_isr_row), re.I)).first.is_visible(timeout=2000):
+                        page.wait_for_timeout(400)
+                        if page.get_by_text(re.compile(re.escape(_isr_row), re.I)).first.is_visible(timeout=1500):
                             det_clicked = True
                             LOG.info("Phase 4: Determinación tab clicked (force)")
                             break
@@ -2716,10 +2717,10 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict, sat_ui: dict |
                         continue
             if not det_clicked:
                 raise RuntimeError("Could not click Determinación tab (visible tab not found or section did not load)")
-        page.wait_for_timeout(800)
+        page.wait_for_timeout(400)
         LOG.info("Phase 4: Determinación tab clicked, waiting for section to load")
         page.wait_for_load_state("domcontentloaded", timeout=5000)
-        page.wait_for_timeout(500)
+        page.wait_for_timeout(200)
         LOG.info("Phase 4: Determinación section loaded; next: VER DETALLE on same row as label 'ISR retenido por personas morales'")
 
         # Excel value for "ISR retenido no acreditable": row with label from config (e.g. ISR retenido) in col D or E
@@ -2751,7 +2752,7 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict, sat_ui: dict |
                     pass
             if ver_detalle_clicked:
                 LOG.info("Phase 4: VER DETALLE clicked; waiting for popup to appear")
-                page.wait_for_timeout(500)
+                page.wait_for_timeout(200)
                 popup_visible = False
                 for _ in range(6):
                     try:
@@ -2763,7 +2764,7 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict, sat_ui: dict |
                             break
                     except Exception:
                         pass
-                    page.wait_for_timeout(500)
+                    page.wait_for_timeout(200)
                 if not popup_visible:
                     LOG.warning("Phase 4: VER DETALLE was clicked but popup did not appear (dialog not visible); treating as failed")
                     ver_detalle_clicked = False
@@ -2949,10 +2950,10 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict, sat_ui: dict |
                         pass
             except Exception as e_fill:
                 LOG.warning("Phase 4: could not fill ISR retenido no acreditable: %s", e_fill)
-            page.wait_for_timeout(200)
+            page.wait_for_timeout(150)
             LOG.info("Phase 4: clicking CERRAR in ISR retenido popup")
             page.get_by_role("button", name=re.compile(r"CERRAR", re.I)).first.click(timeout=1500)
-            page.wait_for_timeout(600)
+            page.wait_for_timeout(200)
             LOG.info("Phase 4: CERRAR clicked, popup closed; next: GUARDAR and wait for load")
         LOG.info("Phase 4: clicking GUARDAR (after Determinación / ISR retenido popup)")
         guardar2_clicked = False
@@ -3376,7 +3377,7 @@ def fill_iva_simplificado_determinacion(page: Page, mapping: dict, data: dict, i
         LOG.warning("IVA Determinación: could not click CAPTURAR for IVA acreditable del periodo")
     else:
         LOG.info("IVA Determinación: CAPTURAR clicked; waiting for popup")
-        page.wait_for_timeout(100)
+        page.wait_for_timeout(80)
         # Wait for popup
         dialog = None
         for _ in range(8):
@@ -3391,7 +3392,7 @@ def fill_iva_simplificado_determinacion(page: Page, mapping: dict, data: dict, i
                     break
             except Exception:
                 pass
-            page.wait_for_timeout(80)
+            page.wait_for_timeout(50)
         if dialog is None:
             dialog = page
             LOG.debug("IVA Determinación: using page as popup scope")
@@ -3427,7 +3428,7 @@ def fill_iva_simplificado_determinacion(page: Page, mapping: dict, data: dict, i
         LOG.info("IVA Determinación popup: clicking CERRAR")
         page.get_by_role("button", name=re.compile(r"CERRAR", re.I)).first.click(timeout=1500)
         LOG.info("IVA Determinación popup: CERRAR clicked; popup closed")
-        page.wait_for_timeout(500)  # Let modal fully close so main form GUARDAR is the first match
+        page.wait_for_timeout(200)  # Let modal fully close so main form GUARDAR is the first match
 
     # GUARDAR main form (fail fast: 2s per attempt so we don't burn ~1 min on wrong/modal GUARDAR)
     LOG.info("IVA Determinación: clicking GUARDAR (main form)")
