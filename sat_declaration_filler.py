@@ -3427,11 +3427,13 @@ def fill_iva_simplificado_determinacion(page: Page, mapping: dict, data: dict, i
         LOG.info("IVA Determinación popup: clicking CERRAR")
         page.get_by_role("button", name=re.compile(r"CERRAR", re.I)).first.click(timeout=1500)
         LOG.info("IVA Determinación popup: CERRAR clicked; popup closed")
-        page.wait_for_timeout(300)
+        page.wait_for_timeout(500)  # Let modal fully close so main form GUARDAR is the first match
 
-    # GUARDAR main form
+    # GUARDAR main form (fail fast: 2s per attempt so we don't burn ~1 min on wrong/modal GUARDAR)
     LOG.info("IVA Determinación: clicking GUARDAR (main form)")
     guardar_ok = False
+    _guardar_wait_ms = 2000
+    _guardar_click_ms = 2000
     for loc in [
         page.get_by_role("button", name=re.compile(r"GUARDAR", re.I)),
         page.locator("input[type='submit'][value*='GUARDAR'], input[type='button'][value*='GUARDAR']"),
@@ -3439,12 +3441,16 @@ def fill_iva_simplificado_determinacion(page: Page, mapping: dict, data: dict, i
     ]:
         try:
             first_btn = loc.first
-            first_btn.wait_for(state="visible", timeout=2500)
-            if first_btn.locator("xpath=ancestor::*[contains(@class,'modal') or @role='dialog']").count() > 0:
-                continue
+            first_btn.wait_for(state="visible", timeout=_guardar_wait_ms)
+            # Skip if inside modal (cap check at 500ms so we don't hang)
+            try:
+                if first_btn.locator("xpath=ancestor::*[contains(@class,'modal') or @role='dialog']").first.is_visible(timeout=500):
+                    continue
+            except Exception:
+                pass
             if first_btn.get_attribute("disabled"):
                 continue
-            first_btn.click(timeout=2000)
+            first_btn.click(timeout=_guardar_click_ms)
             guardar_ok = True
             LOG.info("IVA Determinación: GUARDAR clicked")
             break
