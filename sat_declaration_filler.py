@@ -8,12 +8,14 @@ See PLAN_FORM_FILL_AUTOMATION.md.
 from __future__ import annotations
 
 import argparse
+from typing import Callable
 import json
 import logging
 import os
 import re
 import signal
 import sys
+import tempfile
 import threading
 import time
 from datetime import datetime
@@ -28,6 +30,11 @@ try:
     import pyodbc
 except ImportError:
     pyodbc = None
+
+try:
+    import requests
+except ImportError:
+    requests = None  # type: ignore[assignment]
 
 from playwright.sync_api import Frame, Page, sync_playwright
 
@@ -46,6 +53,8 @@ PHASE3_POPUP_CERRAR_CLICK_MS = 5000    # timeout when clicking CERRAR once it's 
 PHASE3_POPUP_CERRAR_SELECTOR_MS = 4000  # per mapping selector (fail fast)
 PHASE3_SECTION_GAP_MS = 100  # 1s between ISR Ingresos sections (was 20–60ms; reduces perceived lag)
 SP_GET_EFIRMA = "[GET_AUTOMATICTAXDECLARATION_CUSTOMERDATA]"
+# SAT Automatic Declaration API (dynamic Excel/CER/KEY/password). See docs/PLAN_DYNAMIC_API_EXCEL_CER_KEY_PASSWORD.md.
+SAT_AUTOMATIC_DECLARATION_API_BASE_URL = "https://app.valarix.com/Services/SatAutomaticDeclarationService.asmx"
 LOG = logging.getLogger("sat_declaration_filler")
 
 
@@ -386,6 +395,149 @@ def load_mapping(path: str | None) -> dict:
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
     return {k: v for k, v in data.items() if not k.startswith("_comment") and isinstance(v, list)}
+
+
+# --- SAT Automatic Declaration API (dynamic Excel/CER/KEY/password) ---
+
+def get_pending_declarations(company_id: int, branch_id: int, base_url: str) -> list[dict]:
+    """
+    GET GetPendingDeclarations; return list of declaration objects from response data.
+    On non-200 or missing data, log and return [].
+    """
+    if requests is None:
+        raise RuntimeError("requests is required for API mode. Install with: pip install requests")
+    url = base_url.rstrip("/") + "/GetPendingDeclarations"
+    params = {"companyId": str(company_id), "branchId": str(branch_id)}
+    try:
+        resp = requests.get(url, params=params, timeout=60)
+        resp.raise_for_status()
+        body = resp.json()
+    except requests.RequestException as e:
+        LOG.warning("GetPendingDeclarations request failed: %s", e)
+        return []
+    except (ValueError, KeyError) as e:
+        LOG.warning("GetPendingDeclarations invalid JSON: %s", e)
+        return []
+    status = body.get("statusCode")
+    if status != 200:
+        LOG.warning("GetPendingDeclarations statusCode=%s message=%s", status, body.get("message", ""))
+        return []
+    data = body.get("data")
+    if not isinstance(data, list):
+        return []
+    return data
+
+
+def download_file(url: str, dest_path: str) -> None:
+    """Download url to dest_path. Raises RuntimeError on non-2xx or IO error."""
+    if requests is None:
+        raise RuntimeError("requests is required. Install with: pip install requests")
+    try:
+        resp = requests.get(url, stream=True, timeout=60)
+        resp.raise_for_status()
+        os.makedirs(os.path.dirname(dest_path) or ".", exist_ok=True)
+        with open(dest_path, "wb") as f:
+            for chunk in resp.iter_content(chunk_size=8192):
+                if chunk:
+                    f.write(chunk)
+    except requests.RequestException as e:
+        raise RuntimeError(f"Download failed {url!r}: {e}") from e
+    except OSError as e:
+        raise RuntimeError(f"Write failed {dest_path!r}: {e}") from e
+
+
+def prepare_declaration_from_api(declaration: dict, download_dir: str) -> tuple[str, dict]:
+    """
+    Download Excel, CER, KEY from declaration URLs; return (workbook_path, efirma_dict).
+    efirma_dict has cer_path, key_path, password, rfc. Normalizes FIEL* / Fiel* key names.
+    """
+    def _get(d: dict, *keys: str) -> str:
+        for k in keys:
+            v = d.get(k)
+            if v:
+                return str(v).strip()
+        return ""
+
+    excel_url = _get(declaration, "EXCELFILEPATH", "ExcelFilePath")
+    cer_url = _get(declaration, "FIELXMLCERTIFICATE", "FielXmlCertificate")
+    key_url = _get(declaration, "FIELXMLKEY", "FielXmlKey")
+    password = _get(declaration, "FIELTIMBARDOPASSWORD", "FielTimbardoPassword")
+    decl_id = _get(declaration, "DECLARATIONID", "DeclarationId") or "0"
+    rfc = _get(declaration, "TAXID", "TaxId")
+
+    if not excel_url or not cer_url or not key_url:
+        raise ValueError("Declaration missing EXCELFILEPATH, FIELXMLCERTIFICATE, or FIELXMLKEY")
+
+    safe_id = re.sub(r"[^\w\-]", "_", decl_id)
+    excel_path = os.path.join(download_dir, f"declaration_{safe_id}.xlsx")
+    cer_path = os.path.join(download_dir, f"declaration_{safe_id}.cer")
+    key_path = os.path.join(download_dir, f"declaration_{safe_id}.key")
+
+    LOG.info("Downloading declaration files (DECLARATIONID=%s) to %s", decl_id, download_dir)
+    LOG.info("  Excel: %s -> %s", excel_url, excel_path)
+    download_file(excel_url, excel_path)
+    LOG.info("  CER:   %s -> %s", cer_url, cer_path)
+    download_file(cer_url, cer_path)
+    LOG.info("  KEY:   %s -> %s", key_url, key_path)
+    download_file(key_url, key_path)
+    LOG.info("Downloaded workbook, CER, KEY for declaration %s", decl_id)
+
+    return excel_path, {
+        "cer_path": os.path.abspath(cer_path),
+        "key_path": os.path.abspath(key_path),
+        "password": password or "",
+        "rfc": rfc or "",
+    }
+
+
+def mark_processing(company_id: int, branch_id: int, declaration_id: int, base_url: str) -> bool:
+    """POST MarkProcessing; return True if statusCode == 200."""
+    if requests is None:
+        raise RuntimeError("requests is required for API mode. Install with: pip install requests")
+    url = base_url.rstrip("/") + "/MarkProcessing"
+    payload = {
+        "companyId": str(company_id),
+        "branchId": str(branch_id),
+        "declarationId": str(declaration_id),
+    }
+    try:
+        resp = requests.post(url, json=payload, timeout=30)
+        resp.raise_for_status()
+        body = resp.json()
+    except requests.RequestException as e:
+        LOG.warning("MarkProcessing request failed: %s", e)
+        return False
+    ok = body.get("statusCode") == 200
+    if not ok:
+        LOG.warning("MarkProcessing statusCode=%s message=%s", body.get("statusCode"), body.get("message", ""))
+    return ok
+
+
+def mark_completed(company_id: int, branch_id: int, declaration_id: int, pdf_file_path: str, base_url: str) -> bool:
+    """
+    POST MarkCompleted with pdfFilePath. Return True if statusCode == 200.
+    Note: Backend may expect a server-relative path; upload may be required separately.
+    """
+    if requests is None:
+        raise RuntimeError("requests is required for API mode. Install with: pip install requests")
+    url = base_url.rstrip("/") + "/MarkCompleted"
+    payload = {
+        "companyId": str(company_id),
+        "branchId": str(branch_id),
+        "declarationId": str(declaration_id),
+        "pdfFilePath": pdf_file_path,
+    }
+    try:
+        resp = requests.post(url, json=payload, timeout=30)
+        resp.raise_for_status()
+        body = resp.json()
+    except requests.RequestException as e:
+        LOG.warning("MarkCompleted request failed: %s", e)
+        return False
+    ok = body.get("statusCode") == 200
+    if not ok:
+        LOG.warning("MarkCompleted statusCode=%s message=%s", body.get("statusCode"), body.get("message", ""))
+    return ok
 
 
 # Default SAT UI labels/patterns (config.json sat_ui). When SAT changes wording, update config; code merges with these.
@@ -4074,6 +4226,14 @@ def run(
     test_full: bool = False,
     test_phase3: bool = False,
     test_iva: bool = False,
+    use_api_efirma: bool = False,
+    efirma_from_api: dict | None = None,
+    company_id_api: int | None = None,
+    branch_id_api: int | None = None,
+    declaration_id_api: int | None = None,
+    api_base_url: str | None = None,
+    pdf_download_callback: Callable[[str], None] | None = None,
+    pdf_download_dir: str | None = None,
 ) -> bool:
     """
     Full flow: read Excel → get e.firma → login SAT → navigate → fill initial → fill ISR → fill IVA → check totals → send.
@@ -4082,6 +4242,7 @@ def run(
     If test_full=True: login + fill initial form + phase 3 (ISR Ingresos) + phase 4 (Determinación, ISR retenido VER DETALLE) + phase 5 (Pago) + IVA simplificado de confianza (ADMINISTRACIÓN → IVA → Determinación → Pago tab). e.firma and data from config/Excel. No send.
     If test_phase3=True: login + fill initial form + select ISR simplificado de confianza + fill ISR section (Ingresos, etc.). Stops after ISR fill; no IVA/send. Requires --workbook.
     If test_iva=True: login + fill initial form + transition to phase 3 (SIGUIENTE, CERRAR) + select IVA simplificado de confianza + fill IVA Determinación form. No ISR. Requires --workbook.
+    If use_api_efirma=True and efirma_from_api: use efirma_from_api for login (no DB/config). Optional pdf_download_callback called with local PDF path after send (API mode).
     Returns True if declaration was sent (or test step OK), False otherwise. Logs and prints outcome.
     """
     config = load_config(config_path)
@@ -4100,8 +4261,12 @@ def run(
 
     global _run_context
     if test_login:
-        LOG.info("Test mode: login only (no DB, using test_cer_path / test_key_path / test_password from config)")
-        efirma = get_efirma_from_config(config)
+        if use_api_efirma and efirma_from_api:
+            LOG.info("Test mode: login only (e.firma from API: downloaded CER/KEY, password from response)")
+            efirma = efirma_from_api
+        else:
+            LOG.info("Test mode: login only (no DB, using test_cer_path / test_key_path / test_password from config)")
+            efirma = get_efirma_from_config(config)
         sat_ui = get_sat_ui(config)
         for attempt in range(2):
             try:
@@ -4217,7 +4382,7 @@ def run(
         data["workbook_path"] = workbook_path
         label_map = data["label_map"]
         LOG.info("Period: %s-%s, periodicidad: %s", data.get("year"), data.get("month"), data.get("periodicidad"))
-        efirma = get_efirma_from_config(config)
+        efirma = efirma_from_api if (use_api_efirma and efirma_from_api) else get_efirma_from_config(config)
         sat_ui = get_sat_ui(config)
         isr_labels = get_isr_determinacion_labels(config)
         run_success = False
@@ -4300,7 +4465,7 @@ def run(
         data = read_impuestos(workbook_path)
         data["workbook_path"] = workbook_path
         LOG.info("Period: %s-%s, periodicidad: %s", data.get("year"), data.get("month"), data.get("periodicidad"))
-        efirma = get_efirma_from_config(config)
+        efirma = efirma_from_api if (use_api_efirma and efirma_from_api) else get_efirma_from_config(config)
         sat_ui = get_sat_ui(config)
         run_success = False
         for attempt in range(2):
@@ -4374,7 +4539,7 @@ def run(
         data["workbook_path"] = workbook_path
         label_map = data["label_map"]
         LOG.info("Period: %s-%s, periodicidad: %s", data.get("year"), data.get("month"), data.get("periodicidad"))
-        efirma = get_efirma_from_config(config)
+        efirma = efirma_from_api if (use_api_efirma and efirma_from_api) else get_efirma_from_config(config)
         sat_ui = get_sat_ui(config)
         isr_labels = get_isr_determinacion_labels(config)
         for attempt in range(2):
@@ -4438,17 +4603,22 @@ def run(
                     return False
         return False
 
-    # Normal flow (DB for e.firma)
-    if not workbook_path or company_id is None or branch_id is None:
-        raise ValueError("Normal run requires --workbook, --company-id, --branch-id")
+    # Normal flow (DB or API e.firma)
+    if not workbook_path:
+        raise ValueError("Normal run requires --workbook")
+    if use_api_efirma and efirma_from_api:
+        efirma = efirma_from_api
+        LOG.info("Using e.firma from API (downloaded CER/KEY)")
+    elif company_id is not None and branch_id is not None:
+        LOG.info("Fetching e.firma from DB for company=%s branch=%s", company_id, branch_id)
+        efirma = get_efirma_from_db(company_id, branch_id, config)
+    else:
+        raise ValueError("Normal run requires (--company-id and --branch-id) or API e.firma (use_api_efirma + efirma_from_api)")
     LOG.info("Reading workbook: %s", workbook_path)
     data = read_impuestos(workbook_path)
     data["workbook_path"] = workbook_path
     label_map = data["label_map"]
     LOG.info("Period: %s-%s, labels read: %d", data.get("year"), data.get("month"), len(label_map))
-
-    LOG.info("Fetching e.firma from DB for company=%s branch=%s", company_id, branch_id)
-    efirma = get_efirma_from_db(company_id, branch_id, config)
     tolerance = config.get("totals_tolerance_pesos", TOLERANCE_PESOS)
     sat_ui = get_sat_ui(config)
     isr_labels = get_isr_determinacion_labels(config)
@@ -4500,10 +4670,27 @@ def run(
                         print(msg, file=sys.stderr)
                         return False
 
-                    if not send_declaration(page, mapping):
-                        LOG.warning("Could not find/click Enviar declaración button")
-                        return False
-                    page.wait_for_timeout(3000)
+                    if pdf_download_callback is not None:
+                        with context.expect_download(timeout=60000) as download_info:
+                            if not send_declaration(page, mapping):
+                                LOG.warning("Could not find/click Enviar declaración button")
+                                return False
+                            page.wait_for_timeout(3000)
+                            try:
+                                download = download_info.value
+                                pdf_dir = pdf_download_dir or tempfile.gettempdir()
+                                decl_id = declaration_id_api if declaration_id_api is not None else 0
+                                pdf_path = os.path.join(pdf_dir, f"receipt_{decl_id}.pdf")
+                                download.save_as(pdf_path)
+                                LOG.info("PDF receipt saved: %s", pdf_path)
+                                pdf_download_callback(pdf_path)
+                            except Exception as e:
+                                LOG.warning("Could not save PDF or run callback: %s", e)
+                    else:
+                        if not send_declaration(page, mapping):
+                            LOG.warning("Could not find/click Enviar declaración button")
+                            return False
+                        page.wait_for_timeout(3000)
                     LOG.info("Declaration send clicked; complete any remaining steps in the browser.")
                     return True
                 finally:
@@ -4536,6 +4723,11 @@ def main() -> None:
     parser.add_argument("--test-full", action="store_true", help="Test full: login + initial form + phase 3 (ISR Ingresos) + phase 4 (Determinación, ISR retenido VER DETALLE) + phase 5 (Pago); e.firma from config, data from Excel (--workbook); no IVA/send")
     parser.add_argument("--test-phase3", action="store_true", help="Test phase 3: login, initial form, select ISR simplificado de confianza, fill ISR section (Ingresos etc.); requires --workbook; stops before IVA/send")
     parser.add_argument("--test-iva", action="store_true", help="Test IVA only: login, initial form, transition to phase 3, then IVA simplificado de confianza (Determinación); requires --workbook; no ISR/send")
+    parser.add_argument("--api", action="store_true", help="Production API mode: get pending declarations, download Excel/CER/KEY, run filler, MarkCompleted with PDF path")
+    parser.add_argument("--test-api", action="store_true", help="Test API mode: same data from API as --api but run full flow without sending (no MarkProcessing/MarkCompleted)")
+    parser.add_argument("--api-dry-run", action="store_true", help="Only call GetPendingDeclarations and print the list; no download or run")
+    parser.add_argument("--api-download-only", action="store_true", help="API: get pending, download Excel/CER/KEY for first declaration, print paths and exit (no browser)")
+    parser.add_argument("--test-api-login", action="store_true", help="API: get pending, download files + password, then login to SAT only (e.firma), no form fill")
     args = parser.parse_args()
 
     if args.test_login:
@@ -4627,6 +4819,146 @@ def main() -> None:
             config_path=args.config,
             mapping_path=args.mapping,
             test_iva=True,
+        )
+        sys.exit(0 if success else 1)
+
+    # API modes: require --company-id; --branch-id optional (default from config or 1)
+    if args.api_dry_run or args.api_download_only or args.test_api_login or args.test_api or args.api:
+        if args.company_id is None:
+            print("Error: --api, --test-api, --test-api-login, --api-dry-run, and --api-download-only require --company-id.", file=sys.stderr)
+            sys.exit(2)
+        config_path = args.config or os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+        config = load_config(config_path)
+        api_cfg = config.get("sat_automatic_declaration_api") or {}
+        base_url = api_cfg.get("base_url") or SAT_AUTOMATIC_DECLARATION_API_BASE_URL
+        branch_id = args.branch_id
+        if branch_id is None:
+            bid = api_cfg.get("branch_id", "1")
+            branch_id = int(bid) if isinstance(bid, str) and bid.isdigit() else (int(bid) if isinstance(bid, (int, float)) else 1)
+        download_dir = api_cfg.get("download_dir") or ""
+        if not download_dir or not os.path.isdir(download_dir):
+            download_dir = tempfile.mkdtemp(prefix="sat_declaration_api_")
+        setup_logging(config.get("log_file"))
+        LOG.info("")
+        LOG.info("=== Get pending declarations ===")
+        LOG.info("API mode: company_id=%s branch_id=%s base_url=%s download_dir=%s", args.company_id, branch_id, base_url, download_dir)
+
+        if args.api_dry_run:
+            pending = get_pending_declarations(args.company_id, branch_id, base_url)
+            if not pending:
+                LOG.info("No pending declarations for company_id=%s branch_id=%s", args.company_id, branch_id)
+                print("No pending declarations.")
+                sys.exit(0)
+            LOG.info("Found %d pending declaration(s) for company_id=%s branch_id=%s", len(pending), args.company_id, branch_id)
+            print(f"Found {len(pending)} pending declaration(s):")
+            for i, dec in enumerate(pending):
+                cid = dec.get("CUSTOMERID") or dec.get("CustomerId") or ""
+                did = dec.get("DECLARATIONID") or dec.get("DeclarationId") or ""
+                LOG.info("  Pending %d: CUSTOMERID=%s DECLARATIONID=%s", i + 1, cid, did)
+                print(f"  {i + 1}. CUSTOMERID={cid} DECLARATIONID={did}")
+            print("(DECLARATIONID is used for MarkProcessing / MarkCompleted when you run --api.)")
+            sys.exit(0)
+
+        if args.api_download_only:
+            pending = get_pending_declarations(args.company_id, branch_id, base_url)
+            if not pending:
+                LOG.info("No pending declarations for company_id=%s branch_id=%s", args.company_id, branch_id)
+                print("No pending declarations.")
+                sys.exit(0)
+            LOG.info("Found %d pending declaration(s), downloading first", len(pending))
+            for i, dec in enumerate(pending):
+                cid = dec.get("CUSTOMERID") or dec.get("CustomerId") or ""
+                did = dec.get("DECLARATIONID") or dec.get("DeclarationId") or ""
+                LOG.info("  Pending %d: CUSTOMERID=%s DECLARATIONID=%s", i + 1, cid, did)
+            LOG.info("")
+            LOG.info("=== Download files ===")
+            declaration = pending[0]
+            try:
+                workbook_path, efirma = prepare_declaration_from_api(declaration, download_dir)
+            except Exception as e:
+                print(f"Error downloading declaration files: {e}", file=sys.stderr)
+                sys.exit(2)
+            print("Downloaded files (first pending declaration):")
+            print(f"  Workbook: {workbook_path}")
+            print(f"  CER:      {efirma['cer_path']}")
+            print(f"  KEY:      {efirma['key_path']}")
+            print(f"  (password: from API response, in memory only — present: {'yes' if efirma.get('password') else 'no'})")
+            sys.exit(0)
+
+        pending = get_pending_declarations(args.company_id, branch_id, base_url)
+        if not pending:
+            LOG.info("No pending declarations for company_id=%s branch_id=%s", args.company_id, branch_id)
+            print("No pending declarations.")
+            sys.exit(0)
+        LOG.info("Found %d pending declaration(s) for company_id=%s branch_id=%s", len(pending), args.company_id, branch_id)
+        for i, dec in enumerate(pending):
+            cid = dec.get("CUSTOMERID") or dec.get("CustomerId") or ""
+            did = dec.get("DECLARATIONID") or dec.get("DeclarationId") or ""
+            LOG.info("  Pending %d: CUSTOMERID=%s DECLARATIONID=%s", i + 1, cid, did)
+        LOG.info("")
+        LOG.info("=== Download files ===")
+        declaration = pending[0]
+        decl_id = declaration.get("DECLARATIONID") or declaration.get("DeclarationId")
+        if decl_id is None:
+            print("Error: Declaration missing DECLARATIONID.", file=sys.stderr)
+            sys.exit(2)
+        declaration_id = int(decl_id) if not isinstance(decl_id, int) else decl_id
+        try:
+            workbook_path, efirma = prepare_declaration_from_api(declaration, download_dir)
+        except Exception as e:
+            print(f"Error preparing declaration from API: {e}", file=sys.stderr)
+            sys.exit(2)
+        LOG.info("")
+        LOG.info("=== Login to SAT ===")
+
+        if args.test_api_login:
+            success = run(
+                workbook_path=None,
+                company_id=None,
+                branch_id=None,
+                config_path=args.config,
+                mapping_path=args.mapping,
+                test_login=True,
+                use_api_efirma=True,
+                efirma_from_api=efirma,
+            )
+            sys.exit(0 if success else 1)
+
+        if args.test_api:
+            success = run(
+                workbook_path=workbook_path,
+                company_id=None,
+                branch_id=None,
+                config_path=args.config,
+                mapping_path=args.mapping,
+                test_full=True,
+                use_api_efirma=True,
+                efirma_from_api=efirma,
+            )
+            sys.exit(0 if success else 1)
+
+        # --api: production flow with MarkProcessing and MarkCompleted
+        mark_processing_flag = api_cfg.get("mark_processing", True)
+        if mark_processing_flag:
+            mark_processing(args.company_id, branch_id, declaration_id, base_url)
+
+        def _on_pdf(pdf_path: str) -> None:
+            mark_completed(args.company_id, branch_id, declaration_id, pdf_path, base_url)
+
+        success = run(
+            workbook_path=workbook_path,
+            company_id=args.company_id,
+            branch_id=branch_id,
+            config_path=args.config,
+            mapping_path=args.mapping,
+            use_api_efirma=True,
+            efirma_from_api=efirma,
+            company_id_api=args.company_id,
+            branch_id_api=branch_id,
+            declaration_id_api=declaration_id,
+            api_base_url=base_url,
+            pdf_download_callback=_on_pdf,
+            pdf_download_dir=download_dir,
         )
         sys.exit(0 if success else 1)
 

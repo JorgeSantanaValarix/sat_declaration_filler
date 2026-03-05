@@ -105,6 +105,86 @@ Workbook for tests can be set in config as **test_workbook_path** (or **test.wor
 - **Exit code 0** — success (normal run: declaration sent; test: step completed).
 - **Exit code 1** — error or totals mismatch; check console output and `sat_declaration_filler.log`.
 
+## API mode (dynamic Excel/CER/KEY from Valarix API)
+
+Instead of passing a local workbook path and using e.firma from the Contaayuda DB, you can get **Excel, .cer, .key, and password** from the **SAT Automatic Declaration API** (Valarix). The script calls `GetPendingDeclarations`, downloads the files from the returned URLs, and runs the same filler flow. See **docs/PLAN_DYNAMIC_API_EXCEL_CER_KEY_PASSWORD.md** and **Testing/SAT_Automatic_Declaration_API_Documentation.md** for the API contract.
+
+### Config for API mode
+
+In `config.json` add (or copy from `config.example.json`):
+
+```json
+"sat_automatic_declaration_api": {
+  "base_url": "https://app.valarix.com/Services/SatAutomaticDeclarationService.asmx",
+  "download_dir": "",
+  "mark_processing": true,
+  "branch_id": "1"
+}
+```
+
+| Key | Purpose |
+|-----|--------|
+| **base_url** | API base (default above if omitted). |
+| **download_dir** | Folder for downloaded Excel/CER/KEY. Empty = temp directory. |
+| **mark_processing** | If true, call `MarkProcessing` before running the filler (production `--api` only). |
+| **branch_id** | Default branch when you omit `--branch-id` (e.g. `"1"`). |
+
+### Normal run with API (production)
+
+Fetches pending declarations, downloads Excel/CER/KEY/password for the first one, optionally calls **MarkProcessing**, runs the full filler (login → initial form → ISR → IVA → send), then saves the PDF receipt and calls **MarkCompleted** with its path.
+
+**Required:** `--company-id`. **Optional:** `--branch-id` (default from config or `1`). **No** `--workbook` needed.
+
+```bash
+python sat_declaration_filler.py --api --company-id 1000
+python sat_declaration_filler.py --api --company-id 1000 --branch-id 1
+```
+
+- If there are no pending declarations, the script prints "No pending declarations." and exits 0.
+- The backend may expect a **server-relative** path in `MarkCompleted`; if your script only has a local PDF path, you may need an upload step or shared storage. See the plan doc for details.
+
+### Testing with API logic (no send, no status updates)
+
+Use **--test-api-login** to check pending, download files and get password from the API, then **only log in to SAT** (e.firma: CER, KEY, password, Enviar). No form fill, no MarkProcessing/MarkCompleted. Useful to verify API + downloads + e.firma in one step.
+
+```bash
+python sat_declaration_filler.py --test-api-login --company-id 1000 --branch-id 1
+```
+
+Use **--test-api** to validate the full flow: same data source as `--api` (GetPendingDeclarations → download Excel/CER/KEY), but the script runs the **same sequence as --test-full** (login → initial form → ISR → IVA) **without** sending the declaration. It does **not** call `MarkProcessing` or `MarkCompleted`, so declaration status on the server is unchanged.
+
+```bash
+python sat_declaration_filler.py --test-api --company-id 1000 --branch-id 1
+```
+
+Use **--api-dry-run** to only list pending declarations (no download, no browser, no run):
+
+```bash
+python sat_declaration_filler.py --api-dry-run --company-id 1000 --branch-id 1
+```
+
+Output example: `Found 2 pending declaration(s):` then lines like `1. CUSTOMERID=130 DECLARATIONID=2`.
+
+Use **--api-download-only** to list pending, download Excel/CER/KEY for the first one, and print the local file paths (no browser, no filler run). Useful to verify the API and downloads work:
+
+```bash
+python sat_declaration_filler.py --api-download-only --company-id 1000 --branch-id 1
+```
+
+Output: paths for the workbook, .cer, .key, and whether a password was received.
+
+### Summary: API vs normal/test
+
+| Mode | Data source | Sends declaration? | MarkProcessing / MarkCompleted |
+|------|-------------|--------------------|---------------------------------|
+| **Normal** (`-w` + `-c` + `-b`) | Local workbook + e.firma from DB | Yes | No |
+| **--api** | API (pending → download Excel/CER/KEY) | Yes | Yes (optional MarkProcessing; MarkCompleted with PDF path) |
+| **--test-api-login** | Same API as `--api` | No (login only) | No |
+| **--test-api** | Same API as `--api` | No (full flow, stop before send) | No |
+| **--test-full** etc. | Config (test_workbook_path, test_cer_path, …) | No | No |
+
+Install **requests** for API mode: `pip install requests` (included in `requirements.txt`).
+
 ## Label and flow configuration (config.json)
 
 When SAT changes button labels, section titles, or question text, update `config.json` instead of changing code. Copy the relevant keys from `config.example.json` and adjust values.
@@ -217,6 +297,7 @@ The script will then look for the .cer and .key at `C:\Ketan\Fiel\<CompanyId>\<B
 - `--config` — Path to `config.json` (default: same folder as script).
 - `--mapping` — Path to `form_field_mapping.json` (default: same folder as script).
 - **Test flags** (use e.firma from config; no DB): `--test-login`, `--test-initial-form`, `--test-full`, `--test-phase3`, `--test-iva`. See **Test modes** above.
+- **API flags** (Excel/CER/KEY from Valarix API): `--api` (production), `--test-api-login` (get pending + download + login to SAT only), `--test-api` (test full flow with API data, no send), `--api-dry-run` (list pending only), `--api-download-only` (get pending + download files, print paths, no browser). Require `--company-id`; optional `--branch-id`. See **API mode** above.
 
 The script:
 
