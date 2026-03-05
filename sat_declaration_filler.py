@@ -2617,10 +2617,10 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict, sat_ui: dict |
                 continue
         if not guardar_clicked:
             raise RuntimeError("Could not click GUARDAR (main form save button)")
-        page.wait_for_timeout(1500)
+        page.wait_for_timeout(400)
         LOG.info("Phase 4: GUARDAR clicked, waiting for load")
         page.wait_for_load_state("domcontentloaded", timeout=5000)
-        page.wait_for_timeout(800)
+        page.wait_for_timeout(200)
         LOG.info("Phase 4: clicking Determinación tab (to the right of Ingresos)")
         # Reuse same pattern as Phase 5 (Pago): check if section already visible first, then click tab only if needed.
         det_clicked = False
@@ -2972,10 +2972,10 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict, sat_ui: dict |
             except Exception:
                 continue
         if guardar2_clicked:
-            page.wait_for_timeout(1500)
+            page.wait_for_timeout(400)
             LOG.info("Phase 4: GUARDAR clicked, waiting for load")
             page.wait_for_load_state("domcontentloaded", timeout=5000)
-            page.wait_for_timeout(500)
+            page.wait_for_timeout(200)
             LOG.info("Phase 4: load complete after GUARDAR")
         LOG.info("Phase 4: Determinación (ISR retenido no acreditable) completed")
     except Exception as e:
@@ -3191,10 +3191,10 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict, sat_ui: dict |
             except Exception:
                 continue
         if guardar_pago_clicked:
-            page.wait_for_timeout(1000)
+            page.wait_for_timeout(400)
             LOG.info("Phase 5: GUARDAR clicked, waiting for load")
             page.wait_for_load_state("domcontentloaded", timeout=5000)
-            page.wait_for_timeout(500)
+            page.wait_for_timeout(200)
             LOG.info("Phase 5: load complete after GUARDAR")
         LOG.info("Phase 5: Pago completed")
     except Exception as e:
@@ -3459,7 +3459,7 @@ def fill_iva_simplificado_determinacion(page: Page, mapping: dict, data: dict, i
     if not guardar_ok:
         LOG.warning("IVA Determinación: could not click GUARDAR")
     else:
-        page.wait_for_timeout(500)
+        page.wait_for_timeout(400)
         page.wait_for_load_state("domcontentloaded", timeout=4000)
         page.wait_for_timeout(200)
         LOG.info("IVA Determinación: waiting for load after GUARDAR complete")
@@ -3534,9 +3534,9 @@ def fill_iva_simplificado_determinacion(page: Page, mapping: dict, data: dict, i
             except Exception:
                 continue
         if guardar_pago_ok:
-            page.wait_for_timeout(400)
+            page.wait_for_timeout(300)
             page.wait_for_load_state("domcontentloaded", timeout=4000)
-            page.wait_for_timeout(200)
+            page.wait_for_timeout(150)
             LOG.info("IVA Pago: load complete after GUARDAR; IVA simplificado flow complete (then logout/end script)")
         else:
             LOG.warning("IVA Pago: could not click GUARDAR")
