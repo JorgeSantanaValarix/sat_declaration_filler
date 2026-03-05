@@ -556,13 +556,13 @@ def _try_fill(scope: Page | Frame, page_for_wait: Page, mapping: dict, key: str,
     selectors = mapping.get(key)
     if not selectors:
         return False
-    # Login: short timeouts for 5s target. Initial form: longer. Others: short.
+    # Login: short timeouts for 5s target. Initial form: longer. ISR/IVA form fields: fast (~1s per textbox).
     if key.startswith("_login_"):
         timeout_ms = 400
     elif key.startswith("initial_"):
         timeout_ms = _INITIAL_FORM_SELECTOR_TIMEOUT_MS
     else:
-        timeout_ms = _FILL_SELECTOR_TIMEOUT_MS
+        timeout_ms = _TEXTBOX_FILL_VISIBLE_MS  # form fields (ISR/IVA): fast visible wait
     value_str = str(value)
     for sel in selectors:
         try:
@@ -594,7 +594,7 @@ def _try_fill(scope: Page | Frame, page_for_wait: Page, mapping: dict, key: str,
                             first.select_option(label=value_str)
                     else:
                         first.click()
-                        page_for_wait.wait_for_timeout(100 if (timeout_ms or 0) <= 500 else 300)
+                        page_for_wait.wait_for_timeout((100 if (timeout_ms or 0) <= 500 else 300) if key.startswith("initial_") else _OBLIGATION_CLICK_WAIT_MS)
                         first.fill(value_str)
                 return True
             loc = scope.locator(sel)
@@ -613,7 +613,7 @@ def _try_fill(scope: Page | Frame, page_for_wait: Page, mapping: dict, key: str,
                         first.select_option(label=value_str)
                 else:
                     first.click()
-                    page_for_wait.wait_for_timeout(100 if (timeout_ms or 0) <= 500 else 300)
+                    page_for_wait.wait_for_timeout((100 if (timeout_ms or 0) <= 500 else 300) if key.startswith("initial_") else _OBLIGATION_CLICK_WAIT_MS)
                     first.fill(value_str)
             return True
         except Exception:
@@ -1036,11 +1036,25 @@ def transition_initial_to_phase3(page: Page, mapping: dict, sat_ui: dict | None 
     return cerrar_ok
 
 
+# Post-click wait for ISR/IVA obligation selection; match initial form pacing (80–100 ms between dropdowns).
+_OBLIGATION_CLICK_WAIT_MS = 80
+
+# Textbox fill (ISR/IVA): target ~1s per field. Visible/scroll timeouts and short waits between actions.
+_TEXTBOX_FILL_VISIBLE_MS = 350
+_TEXTBOX_FILL_WAIT_MS = 25
+# Phase 4 ISR retenido popup: modal can render slower; use longer timeouts so fill succeeds (was broken by aggressive 350ms).
+_PHASE4_POPUP_VISIBLE_MS = 1000
+_PHASE4_POPUP_WAIT_MS = 80
+
+# Test mode: how long to leave the browser open after a successful run (ms). 10s = 10_000 ms.
+_TEST_INSPECTION_WAIT_MS = 10_000
+
+
 def open_obligation_isr(page, mapping: dict) -> bool:
     """Select 'ISR simplificado de confianza. Personas físicas' (checkmark + label) to open the ISR section; then the Ingresos form loads. Returns True if clicked."""
     ok = _try_click(page, mapping, "_select_obligation_isr")
     if ok:
-        page.wait_for_timeout(800)
+        page.wait_for_timeout(_OBLIGATION_CLICK_WAIT_MS)
     return ok
 
 
@@ -1051,7 +1065,7 @@ def click_administracion_declaracion(page: Page, mapping: dict, sat_ui: dict | N
     ok = _try_click(page, mapping, "_btn_administracion_declaracion")
     if ok:
         LOG.info("IVA: clicked 'ADMINISTRACIÓN DE LA DECLARACIÓN' (mapping)")
-        page.wait_for_timeout(500)
+        page.wait_for_timeout(_OBLIGATION_CLICK_WAIT_MS)
         return True
     admin_pat = _ui_pattern(sat_ui, "btn_administracion_declaracion")
     for btn in page.get_by_role("button", name=admin_pat).all():
@@ -1059,7 +1073,7 @@ def click_administracion_declaracion(page: Page, mapping: dict, sat_ui: dict | N
             if btn.is_visible():
                 btn.click(timeout=2000)
                 LOG.info("IVA: clicked 'ADMINISTRACIÓN DE LA DECLARACIÓN' (button role)")
-                page.wait_for_timeout(500)
+                page.wait_for_timeout(_OBLIGATION_CLICK_WAIT_MS)
                 return True
         except Exception:
             continue
@@ -1068,7 +1082,7 @@ def click_administracion_declaracion(page: Page, mapping: dict, sat_ui: dict | N
             if elem.is_visible() and elem.locator("xpath=ancestor::*[contains(@class,'modal') or @role='dialog']").count() == 0:
                 elem.click(timeout=2000)
                 LOG.info("IVA: clicked 'ADMINISTRACIÓN DE LA DECLARACIÓN' (text)")
-                page.wait_for_timeout(500)
+                page.wait_for_timeout(_OBLIGATION_CLICK_WAIT_MS)
                 return True
         except Exception:
             continue
@@ -1083,7 +1097,7 @@ def open_obligation_iva(page: Page, mapping: dict, sat_ui: dict | None = None) -
     ok = _try_click(page, mapping, "_select_obligation_iva")
     if ok:
         LOG.info("IVA: clicked 'IVA simplificado de confianza' (mapping)")
-        page.wait_for_timeout(500)
+        page.wait_for_timeout(_OBLIGATION_CLICK_WAIT_MS)
         return True
     iva_pat = _ui_pattern(sat_ui, "select_obligation_iva")
     for elem in page.get_by_text(iva_pat).all():
@@ -1091,7 +1105,7 @@ def open_obligation_iva(page: Page, mapping: dict, sat_ui: dict | None = None) -
             if elem.is_visible() and elem.locator("xpath=ancestor::*[contains(@class,'modal') or @role='dialog']").count() == 0:
                 elem.click(timeout=2000)
                 LOG.info("IVA: clicked 'IVA simplificado de confianza' (text)")
-                page.wait_for_timeout(500)
+                page.wait_for_timeout(_OBLIGATION_CLICK_WAIT_MS)
                 return True
         except Exception:
             continue
@@ -1389,31 +1403,31 @@ def _fill_input_next_to_label(
             except Exception:
                 return ""
         try:
-            inp.scroll_into_view_if_needed(timeout=600)
+            inp.scroll_into_view_if_needed(timeout=_TEXTBOX_FILL_VISIBLE_MS)
             inp.click()
-            page_for_wait.wait_for_timeout(50)
+            page_for_wait.wait_for_timeout(_TEXTBOX_FILL_WAIT_MS)
             inp.fill("")
-            page_for_wait.wait_for_timeout(40)
+            page_for_wait.wait_for_timeout(_TEXTBOX_FILL_WAIT_MS)
             inp.fill(val)
-            page_for_wait.wait_for_timeout(80)
+            page_for_wait.wait_for_timeout(_TEXTBOX_FILL_WAIT_MS * 2)
             if _values_match(_get_val(), val):
                 return True
             inp.click()
-            page_for_wait.wait_for_timeout(40)
+            page_for_wait.wait_for_timeout(_TEXTBOX_FILL_WAIT_MS)
             page_for_wait.keyboard.press("Control+a")
-            page_for_wait.wait_for_timeout(30)
-            page_for_wait.keyboard.type(val, delay=30)
-            page_for_wait.wait_for_timeout(80)
+            page_for_wait.wait_for_timeout(_TEXTBOX_FILL_WAIT_MS)
+            page_for_wait.keyboard.type(val, delay=20)
+            page_for_wait.wait_for_timeout(_TEXTBOX_FILL_WAIT_MS * 2)
             if _values_match(_get_val(), val):
                 return True
             inp.click()
-            page_for_wait.wait_for_timeout(40)
-            inp.press_sequentially(val, delay=40)
-            page_for_wait.wait_for_timeout(80)
+            page_for_wait.wait_for_timeout(_TEXTBOX_FILL_WAIT_MS)
+            inp.press_sequentially(val, delay=20)
+            page_for_wait.wait_for_timeout(_TEXTBOX_FILL_WAIT_MS * 2)
             if _values_match(_get_val(), val):
                 return True
             inp.evaluate("""el => { el.value = arguments[0]; el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); }""", val)
-            page_for_wait.wait_for_timeout(50)
+            page_for_wait.wait_for_timeout(_TEXTBOX_FILL_WAIT_MS)
             return _values_match(_get_val(), val)
         except Exception:
             return False
@@ -1421,7 +1435,7 @@ def _fill_input_next_to_label(
     # Strategy 0: get_by_label with exact=False (same as ISR _try_fill when selector is "label=...")
     try:
         control = page_or_scope.get_by_label(label_substring, exact=False).first
-        control.wait_for(state="visible", timeout=500)
+        control.wait_for(state="visible", timeout=_TEXTBOX_FILL_VISIBLE_MS)
         tag = control.evaluate("el => (el && el.tagName) ? el.tagName.toLowerCase() : ''")
         if tag in ("input", "textarea", ""):
             if not control.get_attribute("disabled") and _set_value(control, value_str):
@@ -1434,7 +1448,7 @@ def _fill_input_next_to_label(
         if loc.count() <= occurrence:
             return False
         label_el = loc.nth(occurrence)
-        label_el.wait_for(state="visible", timeout=500)
+        label_el.wait_for(state="visible", timeout=_TEXTBOX_FILL_VISIBLE_MS)
     except Exception:
         return False
     # Only skip when label is inside a modal/dialog and we are searching the full page (avoid matching elements in a popup when we want main page). When scope is the dialog, we want to match labels inside it.
@@ -1454,7 +1468,7 @@ def _fill_input_next_to_label(
         if for_id and str(for_id).strip():
             inp = page_or_scope.locator(f"#{re.escape(str(for_id).strip())}").first
             if inp.count() > 0:
-                inp.wait_for(state="visible", timeout=500)
+                inp.wait_for(state="visible", timeout=_TEXTBOX_FILL_VISIBLE_MS)
                 if not inp.get_attribute("disabled") and _set_value(inp, value_str):
                     return True
     except Exception:
@@ -1467,7 +1481,7 @@ def _fill_input_next_to_label(
         for i in range(n):
             try:
                 inp = row_inputs.nth(i)
-                inp.wait_for(state="visible", timeout=400)
+                inp.wait_for(state="visible", timeout=_TEXTBOX_FILL_VISIBLE_MS)
                 if inp.get_attribute("disabled"):
                     continue
                 if _set_value(inp, value_str):
@@ -1497,7 +1511,7 @@ def _fill_input_next_to_label(
             following_input = label_el.locator(f"xpath=following::input[{input_index}]")
             if following_input.count() > 0:
                 inp = following_input.first
-                inp.wait_for(state="visible", timeout=500)
+                inp.wait_for(state="visible", timeout=_TEXTBOX_FILL_VISIBLE_MS)
                 if inp.get_attribute("disabled"):
                     continue
                 if _set_value(inp, value_str):
@@ -1513,7 +1527,7 @@ def _fill_input_next_to_label(
             inp = label_el.locator(xpath).first
             if inp.count() == 0:
                 continue
-            inp.wait_for(state="visible", timeout=400)
+            inp.wait_for(state="visible", timeout=_TEXTBOX_FILL_VISIBLE_MS)
             if inp.get_attribute("disabled"):
                 continue
             if _set_value(inp, value_str):
@@ -1522,7 +1536,7 @@ def _fill_input_next_to_label(
             continue
     try:
         control = page_or_scope.get_by_label(re.compile(re.escape(label_substring), re.I)).first
-        control.wait_for(state="visible", timeout=400)
+        control.wait_for(state="visible", timeout=_TEXTBOX_FILL_VISIBLE_MS)
         tag = control.evaluate("el => (el && el.tagName) ? el.tagName.toLowerCase() : ''")
         if tag == "input" or tag == "":
             if _set_value(control, value_str):
@@ -2608,90 +2622,100 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict, sat_ui: dict |
         page.wait_for_load_state("domcontentloaded", timeout=5000)
         page.wait_for_timeout(800)
         LOG.info("Phase 4: clicking Determinación tab (to the right of Ingresos)")
-        # Avoid matching hidden modal title "Determinación de la Base gravable"; click the visible tab in the tab bar only
+        # Reuse same pattern as Phase 5 (Pago): check if section already visible first, then click tab only if needed.
         det_clicked = False
-
-        def _try_click_det_tab(elem, *, force: bool = False) -> bool:
-            try:
-                elem.wait_for(state="visible", timeout=2000)
-                elem.scroll_into_view_if_needed(timeout=2000)
-                if force:
-                    elem.click(force=True, timeout=3000)
-                else:
-                    elem.click(timeout=3000)
-                page.wait_for_timeout(600)
-                # Verify section switched: row label or VER DETALLE should appear
-                if page.get_by_text(re.compile(re.escape(_isr_row), re.I)).first.is_visible(timeout=1500):
-                    return True
-                if page.get_by_text(_ver_det, exact=False).first.is_visible(timeout=800):
-                    return True
-                return False
-            except Exception:
-                return False
-
-        # 1) Prefer role=tab (proper tab widget)
-        tab_loc = page.get_by_role("tab", name=re.compile(re.escape(_det_tab), re.I))
-        if tab_loc.count() > 0 and _try_click_det_tab(tab_loc.first):
-            det_clicked = True
-            LOG.info("Phase 4: Determinación tab clicked (role=tab)")
+        try:
+            if page.get_by_text(re.compile(re.escape(_isr_row), re.I)).first.is_visible(timeout=800):
+                det_clicked = True
+                LOG.info("Phase 4: Determinación section already visible (%r), skipping tab click", _isr_row)
+            elif page.get_by_text(_ver_det, exact=False).first.is_visible(timeout=500):
+                det_clicked = True
+                LOG.info("Phase 4: Determinación section already visible (VER DETALLE), skipping tab click")
+        except Exception:
+            pass
         if not det_clicked:
-            # 2) Tab bar: element with Determinación inside tablist/tab container
-            for container in page.locator("[role='tablist'], .nav-tabs, ul.tabs, .tabs, [class*='tab']").all():
+            # Avoid matching hidden modal title "Determinación de la Base gravable"; click the visible tab in the tab bar only
+            def _try_click_det_tab(elem, *, force: bool = False) -> bool:
                 try:
-                    if not container.is_visible():
-                        continue
-                    elem = container.get_by_text(_det_tab, exact=True).first
-                    if elem.count() > 0 and _try_click_det_tab(elem):
-                        det_clicked = True
-                        LOG.info("Phase 4: Determinación tab clicked (inside tablist)")
-                        break
-                except Exception:
-                    continue
-        if not det_clicked:
-            for elem in page.get_by_text(_det_tab, exact=True).all():
-                try:
-                    if not elem.is_visible():
-                        continue
-                    if elem.locator("xpath=ancestor::*[contains(@class,'modal') or @role='dialog']").count() > 0:
-                        continue
-                    if _try_click_det_tab(elem):
-                        det_clicked = True
-                        LOG.info("Phase 4: Determinación tab clicked")
-                        break
-                except Exception:
-                    continue
-        if not det_clicked:
-            for elem in page.locator("a, button, [role='tab'], li, span").filter(has_text=re.compile(r"^%s$" % re.escape(_det_tab), re.I)).all():
-                try:
-                    if not elem.is_visible():
-                        continue
-                    if elem.locator("xpath=ancestor::*[contains(@class,'modal') or @role='dialog']").count() > 0:
-                        continue
-                    if _try_click_det_tab(elem):
-                        det_clicked = True
-                        LOG.info("Phase 4: Determinación tab clicked (fallback)")
-                        break
-                except Exception:
-                    continue
-        if not det_clicked:
-            # Last resort: force click first visible Determinación tab (exclude modals)
-            for elem in page.get_by_text(_det_tab, exact=True).all():
-                try:
-                    if not elem.is_visible():
-                        continue
-                    if elem.locator("xpath=ancestor::*[contains(@class,'modal') or @role='dialog']").count() > 0:
-                        continue
+                    elem.wait_for(state="visible", timeout=2000)
                     elem.scroll_into_view_if_needed(timeout=2000)
-                    elem.click(force=True, timeout=3000)
-                    page.wait_for_timeout(1000)
-                    if page.get_by_text(re.compile(re.escape(_isr_row), re.I)).first.is_visible(timeout=2000):
-                        det_clicked = True
-                        LOG.info("Phase 4: Determinación tab clicked (force)")
-                        break
+                    if force:
+                        elem.click(force=True, timeout=3000)
+                    else:
+                        elem.click(timeout=3000)
+                    page.wait_for_timeout(600)
+                    # Verify section switched: row label or VER DETALLE should appear
+                    if page.get_by_text(re.compile(re.escape(_isr_row), re.I)).first.is_visible(timeout=1500):
+                        return True
+                    if page.get_by_text(_ver_det, exact=False).first.is_visible(timeout=800):
+                        return True
+                    return False
                 except Exception:
-                    continue
-        if not det_clicked:
-            raise RuntimeError("Could not click Determinación tab (visible tab not found or section did not load)")
+                    return False
+
+            # 1) Prefer role=tab (proper tab widget)
+            tab_loc = page.get_by_role("tab", name=re.compile(re.escape(_det_tab), re.I))
+            if tab_loc.count() > 0 and _try_click_det_tab(tab_loc.first):
+                det_clicked = True
+                LOG.info("Phase 4: Determinación tab clicked (role=tab)")
+            if not det_clicked:
+                # 2) Tab bar: element with Determinación inside tablist/tab container
+                for container in page.locator("[role='tablist'], .nav-tabs, ul.tabs, .tabs, [class*='tab']").all():
+                    try:
+                        if not container.is_visible():
+                            continue
+                        elem = container.get_by_text(_det_tab, exact=True).first
+                        if elem.count() > 0 and _try_click_det_tab(elem):
+                            det_clicked = True
+                            LOG.info("Phase 4: Determinación tab clicked (inside tablist)")
+                            break
+                    except Exception:
+                        continue
+            if not det_clicked:
+                for elem in page.get_by_text(_det_tab, exact=True).all():
+                    try:
+                        if not elem.is_visible():
+                            continue
+                        if elem.locator("xpath=ancestor::*[contains(@class,'modal') or @role='dialog']").count() > 0:
+                            continue
+                        if _try_click_det_tab(elem):
+                            det_clicked = True
+                            LOG.info("Phase 4: Determinación tab clicked")
+                            break
+                    except Exception:
+                        continue
+            if not det_clicked:
+                for elem in page.locator("a, button, [role='tab'], li, span").filter(has_text=re.compile(r"^%s$" % re.escape(_det_tab), re.I)).all():
+                    try:
+                        if not elem.is_visible():
+                            continue
+                        if elem.locator("xpath=ancestor::*[contains(@class,'modal') or @role='dialog']").count() > 0:
+                            continue
+                        if _try_click_det_tab(elem):
+                            det_clicked = True
+                            LOG.info("Phase 4: Determinación tab clicked (fallback)")
+                            break
+                    except Exception:
+                        continue
+            if not det_clicked:
+                # Last resort: force click first visible Determinación tab (exclude modals)
+                for elem in page.get_by_text(_det_tab, exact=True).all():
+                    try:
+                        if not elem.is_visible():
+                            continue
+                        if elem.locator("xpath=ancestor::*[contains(@class,'modal') or @role='dialog']").count() > 0:
+                            continue
+                        elem.scroll_into_view_if_needed(timeout=2000)
+                        elem.click(force=True, timeout=3000)
+                        page.wait_for_timeout(1000)
+                        if page.get_by_text(re.compile(re.escape(_isr_row), re.I)).first.is_visible(timeout=2000):
+                            det_clicked = True
+                            LOG.info("Phase 4: Determinación tab clicked (force)")
+                            break
+                    except Exception:
+                        continue
+            if not det_clicked:
+                raise RuntimeError("Could not click Determinación tab (visible tab not found or section did not load)")
         page.wait_for_timeout(800)
         LOG.info("Phase 4: Determinación tab clicked, waiting for section to load")
         page.wait_for_load_state("domcontentloaded", timeout=5000)
@@ -2778,46 +2802,42 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict, sat_ui: dict |
             filled = False
 
             def _set_isr_no_acreditable_value(inp, value_str: str) -> bool:
-                """Fill input with value; SAT control may ignore .fill(), so verify and fall back to keyboard + JS."""
+                """Fill input with value; SAT control may ignore .fill(), so verify and fall back to keyboard + JS. Uses Phase 4 popup timeouts (modal needs more time)."""
                 def _get_val():
                     try:
                         return (inp.input_value() or inp.get_attribute("value") or "").strip()
                     except Exception:
                         return ""
                 try:
-                    inp.scroll_into_view_if_needed(timeout=1000)
+                    inp.scroll_into_view_if_needed(timeout=_PHASE4_POPUP_VISIBLE_MS)
                     inp.click()
-                    page.wait_for_timeout(150)
-                    # Try fill first
+                    page.wait_for_timeout(_PHASE4_POPUP_WAIT_MS)
                     inp.fill("")
-                    page.wait_for_timeout(80)
+                    page.wait_for_timeout(_PHASE4_POPUP_WAIT_MS)
                     inp.fill(value_str)
-                    page.wait_for_timeout(200)
+                    page.wait_for_timeout(_PHASE4_POPUP_WAIT_MS * 2)
                     if _get_val() == value_str:
                         return True
-                    # Replace via keyboard (Ctrl+A then type)
                     inp.click()
-                    page.wait_for_timeout(80)
+                    page.wait_for_timeout(_PHASE4_POPUP_WAIT_MS)
                     page.keyboard.press("Control+a")
-                    page.wait_for_timeout(50)
-                    page.keyboard.type(value_str, delay=50)
-                    page.wait_for_timeout(150)
+                    page.wait_for_timeout(_PHASE4_POPUP_WAIT_MS)
+                    page.keyboard.type(value_str, delay=40)
+                    page.wait_for_timeout(_PHASE4_POPUP_WAIT_MS * 2)
                     if _get_val() == value_str:
                         return True
-                    # press_sequentially on the locator
                     inp.click()
-                    page.wait_for_timeout(80)
-                    inp.press_sequentially(value_str, delay=60)
-                    page.wait_for_timeout(150)
+                    page.wait_for_timeout(_PHASE4_POPUP_WAIT_MS)
+                    inp.press_sequentially(value_str, delay=40)
+                    page.wait_for_timeout(_PHASE4_POPUP_WAIT_MS * 2)
                     if _get_val() == value_str:
                         return True
-                    # Last resort: set value via JS and dispatch input/change
                     inp.evaluate("""el => {
                         el.value = arguments[0];
                         el.dispatchEvent(new Event('input', { bubbles: true }));
                         el.dispatchEvent(new Event('change', { bubbles: true }));
                     }""", value_str)
-                    page.wait_for_timeout(100)
+                    page.wait_for_timeout(_PHASE4_POPUP_WAIT_MS)
                     return _get_val() == value_str
                 except Exception:
                     return False
@@ -2826,13 +2846,13 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict, sat_ui: dict |
                 # Strategy 1: Same as Descuentos popup (section 3) — label then following::input[1] and following::input[2]
                 try:
                     label_el = dialog.get_by_text(re.compile(re.escape(_isr_no_acred), re.I)).first
-                    label_el.wait_for(state="visible", timeout=400)
+                    label_el.wait_for(state="visible", timeout=_PHASE4_POPUP_VISIBLE_MS)
                     for input_index in [1, 2]:
                         try:
                             following_input = label_el.locator(f"xpath=following::input[{input_index}]")
                             if following_input.count() > 0:
                                 inp = following_input.first
-                                inp.wait_for(state="visible", timeout=400)
+                                inp.wait_for(state="visible", timeout=_PHASE4_POPUP_VISIBLE_MS)
                                 if inp.get_attribute("disabled"):
                                     continue
                                 if _set_isr_no_acreditable_value(inp, isr_retenido_str):
@@ -2850,7 +2870,7 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict, sat_ui: dict |
                         modal_inputs = dialog.locator("input[type='text'], input[type='number'], input:not([type])")
                         if modal_inputs.count() >= 3:
                             inp = modal_inputs.nth(2)
-                            inp.wait_for(state="visible", timeout=500)
+                            inp.wait_for(state="visible", timeout=_PHASE4_POPUP_VISIBLE_MS)
                             row = inp.locator("xpath=ancestor::tr[1] | ancestor::div[contains(@class,'row')][1]")
                             if row.count() > 0:
                                 row_text = (row.first.inner_text() or "").lower()
@@ -2881,7 +2901,7 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict, sat_ui: dict |
                                     inp = label_el.locator(xpath).first
                                     if inp.count() == 0:
                                         continue
-                                    inp.wait_for(state="visible", timeout=300)
+                                    inp.wait_for(state="visible", timeout=_PHASE4_POPUP_VISIBLE_MS)
                                     if inp.get_attribute("disabled"):
                                         continue
                                     if _set_isr_no_acreditable_value(inp, isr_retenido_str):
@@ -2898,7 +2918,7 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict, sat_ui: dict |
                 if not filled:
                     try:
                         inp = dialog.get_by_label(re.compile(re.escape(_isr_no_acred), re.I)).first
-                        inp.wait_for(state="visible", timeout=300)
+                        inp.wait_for(state="visible", timeout=_PHASE4_POPUP_VISIBLE_MS)
                         if _set_isr_no_acreditable_value(inp, isr_retenido_str):
                             filled = True
                             LOG.info("Phase 4: filled 'ISR retenido no acreditable' (by label) with value=%s from Excel", isr_retenido_str)
@@ -2912,7 +2932,7 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict, sat_ui: dict |
                         for idx in range(n):
                             inp = modal_inputs.nth(idx)
                             try:
-                                inp.wait_for(state="visible", timeout=200)
+                                inp.wait_for(state="visible", timeout=_PHASE4_POPUP_VISIBLE_MS)
                                 row = inp.locator("xpath=ancestor::tr[1] | ancestor::div[contains(@class,'row')][1]")
                                 if row.count() == 0:
                                     continue
@@ -2962,96 +2982,173 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict, sat_ui: dict |
         LOG.warning("Phase 4 (Determinación / ISR retenido VER DETALLE) failed: %s", e)
 
     # Phase 5: Pago tab → *¿Tienes compensaciones por aplicar? → No, *¿Tienes estímulos por aplicar? → No → GUARDAR → wait for load
+    # ISR Pago section detection reuses same pattern as Phase 4 (Determinación): 1) check if section already visible by
+    # section-specific labels; 2) if not, click tab then verify section content (labels) appeared. Success = any of:
+    # compensaciones/estímulos question text OR all three labels "A cargo", "Total de contribuciones", "Total de aplicaciones".
     LOG.info("")
     LOG.info("===== Phase 5: Pago (Pago tab → compensaciones/estímulos → No → GUARDAR) =====")
     _pago_tab = sat_ui.get("pago_tab_name") or "Pago"
     _comp_q = sat_ui.get("isr_pago_compensaciones_question") or "compensaciones por aplicar"
     _estim_q = sat_ui.get("isr_pago_estimulos_question") or "estímulos por aplicar"
+    _pago_a_cargo = sat_ui.get("isr_pago_a_cargo_label") or "A cargo"
+    _pago_total_contrib = sat_ui.get("isr_pago_total_contribuciones_label") or "Total de contribuciones"
+    _pago_total_aplic = sat_ui.get("isr_pago_total_aplicaciones_label") or "Total de aplicaciones"
     _btn_guardar = sat_ui.get("btn_guardar") or "GUARDAR"
+
+    def _pago_section_loaded(page_ctx, timeout_ms: int = 800) -> bool:
+        """True if ISR Pago section content is visible: compensaciones/estímulos OR (A cargo AND Total de contribuciones AND Total de aplicaciones). Uses element visibility first; fallback: body inner_text (draft-style) when get_by_text().first matches hidden node."""
+        # 1) Element-based: visible node with these labels
+        try:
+            if page_ctx.get_by_text(re.compile(re.escape(_comp_q), re.I)).first.is_visible(timeout=timeout_ms):
+                return True
+            if page_ctx.get_by_text(re.compile(re.escape(_estim_q), re.I)).first.is_visible(timeout=timeout_ms):
+                return True
+            if (
+                page_ctx.get_by_text(re.compile(re.escape(_pago_a_cargo), re.I)).first.is_visible(timeout=timeout_ms)
+                and page_ctx.get_by_text(re.compile(re.escape(_pago_total_contrib), re.I)).first.is_visible(timeout=timeout_ms)
+                and page_ctx.get_by_text(re.compile(re.escape(_pago_total_aplic), re.I)).first.is_visible(timeout=timeout_ms)
+            ):
+                return True
+        except Exception:
+            pass
+        # 2) Reuse draft-style detection: body text contains labels (robust when get_by_text matches hidden element)
+        try:
+            body = (page_ctx.locator("body").inner_text(timeout=timeout_ms) or "").lower()
+            if _comp_q.lower() in body or _estim_q.lower() in body:
+                return True
+            if (
+                _pago_a_cargo.lower() in body
+                and _pago_total_contrib.lower() in body
+                and _pago_total_aplic.lower() in body
+            ):
+                LOG.info("Phase 5: Pago section detected via body text (A cargo + Total de contribuciones + Total de aplicaciones)")
+                return True
+        except Exception:
+            pass
+        # Check iframes like draft detection (SAT may render form in iframe)
+        try:
+            for frame in page_ctx.frames:
+                if frame == page_ctx.main_frame:
+                    continue
+                iframe_body = (frame.locator("body").inner_text(timeout=min(timeout_ms, 500)) or "").lower()
+                if _comp_q.lower() in iframe_body or _estim_q.lower() in iframe_body:
+                    return True
+                if _pago_a_cargo.lower() in iframe_body and _pago_total_contrib.lower() in iframe_body and _pago_total_aplic.lower() in iframe_body:
+                    LOG.info("Phase 5: Pago section detected via iframe body text")
+                    return True
+        except Exception:
+            pass
+        return False
+
     try:
         page.wait_for_timeout(400)
-        LOG.info("Phase 5: clicking Pago tab (to the right of Determinación)")
+        # If Pago section is already visible (e.g. tab was clicked in a previous attempt or already selected), treat as success.
         pago_clicked = False
+        LOG.info("Phase 5: checking if Pago section already visible (%r / %r or %r + %r + %r)", _comp_q, _estim_q, _pago_a_cargo, _pago_total_contrib, _pago_total_aplic)
+        try:
+            if _pago_section_loaded(page, timeout_ms=1500):
+                pago_clicked = True
+                LOG.info("Phase 5: Pago section already visible, skipping tab click")
+            else:
+                LOG.info("Phase 5: Pago section not visible yet, will try clicking tab")
+        except Exception as e:
+            LOG.debug("Phase 5: early visibility check failed: %s", e)
+        if not pago_clicked:
+            LOG.info("Phase 5: clicking Pago tab (to the right of Determinación)")
 
-        def _try_click_pago_tab(elem, *, force: bool = False) -> bool:
-            try:
-                elem.wait_for(state="visible", timeout=2000)
-                elem.scroll_into_view_if_needed(timeout=2000)
-                if force:
-                    elem.click(force=True, timeout=3000)
-                else:
-                    elem.click(timeout=3000)
-                page.wait_for_timeout(600)
-                if page.get_by_text(re.compile(re.escape(_comp_q), re.I)).first.is_visible(timeout=1500):
-                    return True
-                if page.get_by_text(re.compile(re.escape(_comp_q), re.I)).first.is_visible(timeout=1500):
-                    return True
-                if page.get_by_text(re.compile(re.escape(_estim_q), re.I)).first.is_visible(timeout=800):
-                    return True
-                return False
-            except Exception:
-                return False
-
-        tab_loc = page.get_by_role("tab", name=re.compile(re.escape(_pago_tab), re.I))
-        if tab_loc.count() > 0 and _try_click_pago_tab(tab_loc.first):
-            pago_clicked = True
-            LOG.info("Phase 5: Pago tab clicked (role=tab)")
-        if not pago_clicked:
-            for container in page.locator("[role='tablist'], .nav-tabs, ul.tabs, .tabs, [class*='tab']").all():
+            def _try_click_pago_tab(elem, *, force: bool = False, attempt_name: str = "") -> bool:
+                """Click Pago tab element; success = section content visible (comp/estim or A cargo + Total de contribuciones + Total de aplicaciones)."""
                 try:
-                    if not container.is_visible():
-                        continue
-                    elem = container.get_by_text(_pago_tab, exact=True).first
-                    if elem.count() > 0 and _try_click_pago_tab(elem):
-                        pago_clicked = True
-                        LOG.info("Phase 5: Pago tab clicked (inside tablist)")
-                        break
-                except Exception:
-                    continue
-        if not pago_clicked:
-            for elem in page.get_by_text(_pago_tab, exact=True).all():
-                try:
-                    if not elem.is_visible():
-                        continue
-                    if elem.locator("xpath=ancestor::*[contains(@class,'modal') or @role='dialog']").count() > 0:
-                        continue
-                    if _try_click_pago_tab(elem):
-                        pago_clicked = True
-                        LOG.info("Phase 5: Pago tab clicked")
-                        break
-                except Exception:
-                    continue
-        if not pago_clicked:
-            for elem in page.locator("a, button, [role='tab'], li, span").filter(has_text=re.compile(r"^%s$" % re.escape(_pago_tab), re.I)).all():
-                try:
-                    if not elem.is_visible():
-                        continue
-                    if elem.locator("xpath=ancestor::*[contains(@class,'modal') or @role='dialog']").count() > 0:
-                        continue
-                    if _try_click_pago_tab(elem):
-                        pago_clicked = True
-                        LOG.info("Phase 5: Pago tab clicked (fallback)")
-                        break
-                except Exception:
-                    continue
-        if not pago_clicked:
-            for elem in page.get_by_text(_pago_tab, exact=True).all():
-                try:
-                    if not elem.is_visible():
-                        continue
-                    if elem.locator("xpath=ancestor::*[contains(@class,'modal') or @role='dialog']").count() > 0:
-                        continue
+                    elem.wait_for(state="visible", timeout=2000)
                     elem.scroll_into_view_if_needed(timeout=2000)
-                    elem.click(force=True, timeout=3000)
-                    page.wait_for_timeout(1000)
-                    if page.get_by_text(re.compile(re.escape(_comp_q), re.I)).first.is_visible(timeout=2000):
-                        pago_clicked = True
-                        LOG.info("Phase 5: Pago tab clicked (force)")
-                        break
-                except Exception:
-                    continue
-        if not pago_clicked:
-            raise RuntimeError("Could not click Pago tab (visible tab not found or section did not load)")
+                    if force:
+                        elem.click(force=True, timeout=3000)
+                    else:
+                        elem.click(timeout=3000)
+                    page.wait_for_timeout(600)
+                    if _pago_section_loaded(page):
+                        return True
+                    LOG.info("Phase 5: attempt %s: tab clicked but section load check failed (%r/%r or %r+%r+%r not visible in time)", attempt_name or "?", _comp_q, _estim_q, _pago_a_cargo, _pago_total_contrib, _pago_total_aplic)
+                    return False
+                except Exception as e:
+                    LOG.info("Phase 5: attempt %s: failed — %s", attempt_name or "?", e)
+                    return False
+
+            attempt = 0
+            tab_loc = page.get_by_role("tab", name=re.compile(re.escape(_pago_tab), re.I))
+            if tab_loc.count() > 0:
+                attempt += 1
+                LOG.info("Phase 5: attempt %s — role=tab name=%r", attempt, _pago_tab)
+                if _try_click_pago_tab(tab_loc.first, attempt_name="role=tab"):
+                    pago_clicked = True
+                    LOG.info("Phase 5: Pago tab clicked (role=tab)")
+            if not pago_clicked:
+                for container in page.locator("[role='tablist'], .nav-tabs, ul.tabs, .tabs, [class*='tab']").all():
+                    try:
+                        if not container.is_visible():
+                            continue
+                        elem = container.get_by_text(_pago_tab, exact=True).first
+                        if elem.count() > 0:
+                            attempt += 1
+                            LOG.info("Phase 5: attempt %s — inside tablist", attempt)
+                            if _try_click_pago_tab(elem, attempt_name="tablist"):
+                                pago_clicked = True
+                                LOG.info("Phase 5: Pago tab clicked (inside tablist)")
+                                break
+                    except Exception as e:
+                        LOG.debug("Phase 5: tablist container attempt: %s", e)
+            if not pago_clicked:
+                for elem in page.get_by_text(_pago_tab, exact=True).all():
+                    try:
+                        if not elem.is_visible():
+                            continue
+                        if elem.locator("xpath=ancestor::*[contains(@class,'modal') or @role='dialog']").count() > 0:
+                            continue
+                        attempt += 1
+                        LOG.info("Phase 5: attempt %s — get_by_text exact", attempt)
+                        if _try_click_pago_tab(elem, attempt_name="get_by_text"):
+                            pago_clicked = True
+                            LOG.info("Phase 5: Pago tab clicked")
+                            break
+                    except Exception as e:
+                        LOG.debug("Phase 5: get_by_text attempt: %s", e)
+            if not pago_clicked:
+                for elem in page.locator("a, button, [role='tab'], li, span").filter(has_text=re.compile(r"^%s$" % re.escape(_pago_tab), re.I)).all():
+                    try:
+                        if not elem.is_visible():
+                            continue
+                        if elem.locator("xpath=ancestor::*[contains(@class,'modal') or @role='dialog']").count() > 0:
+                            continue
+                        attempt += 1
+                        LOG.info("Phase 5: attempt %s — filter Pago", attempt)
+                        if _try_click_pago_tab(elem, attempt_name="filter"):
+                            pago_clicked = True
+                            LOG.info("Phase 5: Pago tab clicked (fallback)")
+                            break
+                    except Exception as e:
+                        LOG.debug("Phase 5: filter attempt: %s", e)
+            if not pago_clicked:
+                for elem in page.get_by_text(_pago_tab, exact=True).all():
+                    try:
+                        if not elem.is_visible():
+                            continue
+                        if elem.locator("xpath=ancestor::*[contains(@class,'modal') or @role='dialog']").count() > 0:
+                            continue
+                        attempt += 1
+                        LOG.info("Phase 5: attempt %s — force click", attempt)
+                        elem.scroll_into_view_if_needed(timeout=2000)
+                        elem.click(force=True, timeout=3000)
+                        page.wait_for_timeout(1000)
+                        if _pago_section_loaded(page):
+                            pago_clicked = True
+                            LOG.info("Phase 5: Pago tab clicked (force)")
+                            break
+                        LOG.info("Phase 5: attempt %s (force): tab clicked but section load check failed", attempt)
+                    except Exception as e:
+                        LOG.info("Phase 5: attempt %s (force): failed — %s", attempt, e)
+            if not pago_clicked:
+                LOG.warning("Phase 5: all %s attempt(s) failed; success = %r/%r or %r+%r+%r visible after click", attempt, _comp_q, _estim_q, _pago_a_cargo, _pago_total_contrib, _pago_total_aplic)
+                raise RuntimeError("Could not click Pago tab (visible tab not found or section did not load)")
         page.wait_for_timeout(800)
         LOG.info("Phase 5: Pago tab clicked, waiting for section to load")
         page.wait_for_load_state("domcontentloaded", timeout=5000)
@@ -3130,12 +3227,12 @@ def _fill_iva_popup_input_by_position(dialog_scope, page_for_wait: Page, step_1b
             cur = (inp.input_value() or inp.get_attribute("value") or "").strip()
             if cur == val or (cur.replace(",", "") == val.replace(",", "")):
                 return True
-            inp.scroll_into_view_if_needed(timeout=400)
+            inp.scroll_into_view_if_needed(timeout=_TEXTBOX_FILL_VISIBLE_MS)
             inp.click()
-            page_for_wait.wait_for_timeout(40)
+            page_for_wait.wait_for_timeout(_TEXTBOX_FILL_WAIT_MS)
             inp.fill("")
             inp.fill(val)
-            page_for_wait.wait_for_timeout(80)
+            page_for_wait.wait_for_timeout(_TEXTBOX_FILL_WAIT_MS * 2)
             return (inp.input_value() or "").strip() == val or (inp.input_value() or "").replace(",", "") == val.replace(",", "")
         except Exception:
             return False
@@ -3146,10 +3243,10 @@ def _fill_iva_popup_input_by_position(dialog_scope, page_for_wait: Page, step_1b
         )
         idx = step_1based - 1
         n = 0
-        for i in range(min(inputs.count(), 15)):
+        for i in range(min(inputs.count(), 12)):
             inp = inputs.nth(i)
             try:
-                if not inp.is_visible(timeout=200):
+                if not inp.is_visible(timeout=_TEXTBOX_FILL_VISIBLE_MS):
                     continue
                 if inp.get_attribute("disabled") or inp.get_attribute("readonly"):
                     continue
@@ -3175,12 +3272,12 @@ def _fill_iva_input_by_position(
             cur = (inp.input_value() or inp.get_attribute("value") or "").strip()
             if cur == val or (cur.replace(",", "") == val.replace(",", "")):
                 return True
-            inp.scroll_into_view_if_needed(timeout=400)
+            inp.scroll_into_view_if_needed(timeout=_TEXTBOX_FILL_VISIBLE_MS)
             inp.click()
-            page_for_wait.wait_for_timeout(40)
+            page_for_wait.wait_for_timeout(_TEXTBOX_FILL_WAIT_MS)
             inp.fill("")
             inp.fill(val)
-            page_for_wait.wait_for_timeout(80)
+            page_for_wait.wait_for_timeout(_TEXTBOX_FILL_WAIT_MS * 2)
             return (inp.input_value() or "").strip() == val or (inp.input_value() or "").replace(",", "") == val.replace(",", "")
         except Exception:
             return False
@@ -3191,10 +3288,10 @@ def _fill_iva_input_by_position(
         )
         idx = step_1based - 1
         n = 0
-        for i in range(min(inputs.count(), 20)):
+        for i in range(min(inputs.count(), 12)):
             inp = inputs.nth(i)
             try:
-                if not inp.is_visible(timeout=200):
+                if not inp.is_visible(timeout=_TEXTBOX_FILL_VISIBLE_MS):
                     continue
                 if inp.get_attribute("disabled") or inp.get_attribute("readonly"):
                     continue
@@ -3225,13 +3322,13 @@ def fill_iva_simplificado_determinacion(page: Page, mapping: dict, data: dict, i
 
     # Wait for IVA form (Determinación)
     LOG.info("IVA Determinación: waiting for IVA form to load")
-    page.wait_for_timeout(300)
+    page.wait_for_timeout(100)
     try:
-        page.get_by_text(re.compile(r"IVA\s+simplificado\s+de\s+confianza", re.I)).first.wait_for(state="visible", timeout=3000)
+        page.get_by_text(re.compile(r"IVA\s+simplificado\s+de\s+confianza", re.I)).first.wait_for(state="visible", timeout=1200)
         LOG.info("IVA Determinación: IVA form title visible")
     except Exception:
         LOG.debug("IVA Determinación: IVA form title wait skipped or timed out")
-    page.wait_for_timeout(150)
+    page.wait_for_timeout(50)
 
     # Scope to Determinación tab content to avoid matching hidden/duplicate elements from other tabs
     iva_scope = scope
@@ -3241,7 +3338,7 @@ def fill_iva_simplificado_determinacion(page: Page, mapping: dict, data: dict, i
             page.locator("[role='tabpanel']").filter(has=page.get_by_text("Actividades gravadas", exact=False)).first,
             page.locator(".tab-pane, [class*='tabpanel'], [class*='tab-content']").filter(has=page.get_by_text("Actividades gravadas", exact=False)).first,
         ]:
-            if candidate.count() > 0 and candidate.first.is_visible(timeout=300):
+            if candidate.count() > 0 and candidate.first.is_visible(timeout=_TEXTBOX_FILL_VISIBLE_MS):
                 iva_scope = candidate.first
                 LOG.info("IVA Determinación: using tabpanel scope for field lookup")
                 break
@@ -3264,7 +3361,7 @@ def fill_iva_simplificado_determinacion(page: Page, mapping: dict, data: dict, i
             LOG.info("IVA Determinación: step %s/5 — filled %r", step, form_label)
         else:
             LOG.warning("IVA Determinación: step %s/%s — could not fill %r", step, len(main_fields), form_label)
-        page.wait_for_timeout(80)
+        page.wait_for_timeout(_TEXTBOX_FILL_WAIT_MS)
 
     # Click CAPTURAR next to *IVA acreditable del periodo (reuse ISR logic: iterate CAPTURARs, match row by label text)
     LOG.info("IVA Determinación: step — clicking CAPTURAR next to '*IVA acreditable del periodo'")
@@ -3279,12 +3376,12 @@ def fill_iva_simplificado_determinacion(page: Page, mapping: dict, data: dict, i
         LOG.warning("IVA Determinación: could not click CAPTURAR for IVA acreditable del periodo")
     else:
         LOG.info("IVA Determinación: CAPTURAR clicked; waiting for popup")
-        page.wait_for_timeout(250)
+        page.wait_for_timeout(100)
         # Wait for popup
         dialog = None
         for _ in range(8):
             try:
-                if page.get_by_role("dialog").first.is_visible(timeout=200):
+                if page.get_by_role("dialog").first.is_visible(timeout=_TEXTBOX_FILL_VISIBLE_MS):
                     dialog = page.get_by_role("dialog").first
                     LOG.info("IVA Determinación: popup visible (dialog role)")
                     break
@@ -3294,7 +3391,7 @@ def fill_iva_simplificado_determinacion(page: Page, mapping: dict, data: dict, i
                     break
             except Exception:
                 pass
-            page.wait_for_timeout(150)
+            page.wait_for_timeout(80)
         if dialog is None:
             dialog = page
             LOG.debug("IVA Determinación: using page as popup scope")
@@ -3313,7 +3410,7 @@ def fill_iva_simplificado_determinacion(page: Page, mapping: dict, data: dict, i
             LOG.info("IVA Determinación popup: filled '%s'", label_grav)
         else:
             LOG.warning("IVA Determinación popup: could not fill '%s'", label_grav)
-        page.wait_for_timeout(60)
+        page.wait_for_timeout(_TEXTBOX_FILL_WAIT_MS)
         # *IVA acreditable por actividades mixtas = 0
         label_mixtas = "IVA acreditable por actividades mixtas"
         LOG.info("IVA Determinación popup: filling '%s' with 0", label_mixtas)
@@ -3326,7 +3423,7 @@ def fill_iva_simplificado_determinacion(page: Page, mapping: dict, data: dict, i
             LOG.info("IVA Determinación popup: filled '%s' with 0", label_mixtas)
         else:
             LOG.warning("IVA Determinación popup: could not fill '%s'", label_mixtas)
-        page.wait_for_timeout(60)
+        page.wait_for_timeout(_TEXTBOX_FILL_WAIT_MS)
         LOG.info("IVA Determinación popup: clicking CERRAR")
         page.get_by_role("button", name=re.compile(r"CERRAR", re.I)).first.click(timeout=1500)
         LOG.info("IVA Determinación popup: CERRAR clicked; popup closed")
@@ -3564,10 +3661,13 @@ def logout_sat(page: Page, mapping: dict) -> None:
     try:
         if _try_click(page, mapping, "_nav_cerrar"):
             LOG.info("Logged out from SAT (Cerrar clicked)")
-            page.wait_for_timeout(700)
+            page.wait_for_timeout(1500)  # Let logout navigation complete before caller may close browser
         else:
-            page.get_by_role("link", name=re.compile(r"Cerrar", re.I)).first.click(timeout=2000)
-            page.wait_for_timeout(700)
+            # Fallback: cap wait so we don't block 30s (Playwright default) if Cerrar is missing
+            cerrar = page.get_by_role("link", name=re.compile(r"Cerrar", re.I)).first
+            cerrar.wait_for(state="visible", timeout=5000)
+            cerrar.click(timeout=2000)
+            page.wait_for_timeout(1500)  # Let logout navigation complete before caller may close browser
             LOG.info("Logged out from SAT (Cerrar clicked via fallback)")
     except Exception as e:
         LOG.debug("Logout (Cerrar) skipped or failed: %s", e)
@@ -3871,7 +3971,7 @@ def fill_obligation_section(page, mapping: dict, label_map: dict, labels: list[s
         if isinstance(value, float) and value == 0.0:
             continue
         _try_fill(page, page, mapping, label, value)
-        page.wait_for_timeout(200)
+        page.wait_for_timeout(_OBLIGATION_CLICK_WAIT_MS)
 
 
 def check_totals(page, data: dict, mapping: dict, tolerance: int) -> tuple[bool, str]:
@@ -3982,9 +4082,11 @@ def run(
     setup_logging(config.get("log_file"))
 
     def _on_sigint(_signum, _frame):
-        # Do not call any Playwright APIs here — they can block and freeze the terminal.
-        print("Ctrl+C: exiting.", file=sys.stderr)
-        os._exit(130)
+        # Do not call Playwright from here (can block). Raise KeyboardInterrupt so main thread
+        # unwinds and the finally block runs (logout_sat, then close browser).
+        signal.signal(signal.SIGINT, signal.SIG_DFL)  # second Ctrl+C kills immediately
+        print("Ctrl+C: cleaning up (logout, close browser)...", file=sys.stderr)
+        raise KeyboardInterrupt
 
     signal.signal(signal.SIGINT, _on_sigint)
     base_url = config.get("sat_portal_url", SAT_PORTAL_URL)
@@ -4009,10 +4111,12 @@ def run(
                     finally:
                         _run_context = None
                         time.sleep(0.5)  # Let Playwright pending ops settle before close (avoids greenlet thread errors)
+                        LOG.info("Cleanup: logging out from SAT, then closing browser.")
                         try:
                             logout_sat(page, mapping)
+                            page.wait_for_timeout(2000)  # Let Cerrar click and navigation complete before closing
                         except Exception as e:
-                            LOG.debug("Test cleanup logout: %s", e)
+                            LOG.warning("Test cleanup logout or wait: %s", e)
                         try:
                             page.close()
                         except Exception as e:
@@ -4141,17 +4245,21 @@ def run(
                         LOG.info("Test full run: ISR complete; running IVA simplificado de confianza (central)")
                         iva_det_fields = get_iva_determinacion_fields(config)
                         fill_iva_simplificado(page, mapping, data, sat_ui, iva_determinacion_fields=iva_det_fields)
-                        LOG.info("Test full run: initial form + ISR + IVA Determinación + Pago tab complete. Browser will stay open 10s for inspection.")
-                        page.wait_for_timeout(10000)
+                        LOG.info("Test full run: initial form + ISR + IVA Determinación + Pago tab complete. Browser will stay open %ss for inspection.", _TEST_INSPECTION_WAIT_MS // 1000)
+                        page.wait_for_timeout(_TEST_INSPECTION_WAIT_MS)
                         run_success = True
                         return True
                     finally:
                         _run_context = None
                         time.sleep(0.5)  # Let Playwright pending ops settle before close (avoids greenlet thread errors)
+                        LOG.info("Cleanup: logging out from SAT, then closing browser.")
                         try:
+                            page.set_default_timeout(8000)  # Cap cleanup so logout/close don't block 30s+ if element missing
                             logout_sat(page, mapping)
+                            # Let Cerrar click and navigation complete before closing the browser.
+                            page.wait_for_timeout(2000)
                         except Exception as e:
-                            LOG.debug("Test cleanup logout: %s", e)
+                            LOG.warning("Test cleanup logout or wait: %s", e)
                         try:
                             page.close()
                         except Exception as e:
@@ -4222,10 +4330,12 @@ def run(
                     finally:
                         _run_context = None
                         time.sleep(0.5)
+                        LOG.info("Cleanup: logging out from SAT, then closing browser.")
                         try:
                             logout_sat(page, mapping)
+                            page.wait_for_timeout(2000)  # Let Cerrar click and navigation complete before closing
                         except Exception as e:
-                            LOG.debug("Test cleanup logout: %s", e)
+                            LOG.warning("Test cleanup logout or wait: %s", e)
                         try:
                             page.close()
                         except Exception as e:
