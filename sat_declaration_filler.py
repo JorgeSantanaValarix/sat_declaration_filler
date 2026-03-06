@@ -2925,10 +2925,10 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict, sat_ui: dict |
             # Resolve "Total de ingresos efectivamente cobrados" popup dialog
             dialog = None
             for use_last, dialog_loc, to_ms in [
-                (False, page.get_by_role("dialog"), 900),
-                (False, page.locator("[role='dialog']"), 600),
-                (True, page.locator("div").filter(has_text=re.compile(r"Total de ingresos efectivamente cobrados", re.I)).filter(has_text=re.compile(r"Concepto|AGREGAR|Monto", re.I)), 450),
-                (True, page.locator("div").filter(has_text=re.compile(r"Total de ingresos efectivamente cobrados", re.I)).filter(has=page.locator("select")), 400),
+                (False, page.get_by_role("dialog"), 2000),
+                (False, page.locator("[role='dialog']"), 1500),
+                (True, page.locator("div").filter(has_text=re.compile(r"Total de ingresos efectivamente cobrados", re.I)).filter(has_text=re.compile(r"Concepto|AGREGAR|Monto", re.I)), 1200),
+                (True, page.locator("div").filter(has_text=re.compile(r"Total de ingresos efectivamente cobrados", re.I)).filter(has=page.locator("select")), 1000),
             ]:
                 try:
                     d = dialog_loc.last if use_last else dialog_loc.first
@@ -2959,7 +2959,8 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict, sat_ui: dict |
                 LOG.info("Phase 3: Total percibidos adding entry: excel_label=%r, sat_concepto=%r, importe=%s", excel_label, sat_concepto, importe_str)
                 try:
                     if dialog != page:
-                        dialog.get_by_role("button", name=re.compile(r"AGREGAR", re.I)).first.click(timeout=800)
+                        page.wait_for_timeout(100)  # Let popup settle between entries
+                        dialog.get_by_role("button", name=re.compile(r"AGREGAR", re.I)).first.click(timeout=2500)
                         page.wait_for_timeout(50)
                 except Exception as e_ag:
                     LOG.warning("Phase 3: Total percibidos AGREGAR for %r: %s", excel_label, e_ag)
@@ -3074,7 +3075,7 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict, sat_ui: dict |
             # Close the popup
             try:
                 btn_scope = dialog if dialog != page else page
-                btn_scope.get_by_role("button", name=re.compile(r"CERRAR", re.I)).first.click(timeout=800)
+                btn_scope.get_by_role("button", name=re.compile(r"CERRAR", re.I)).first.click(timeout=2000)
                 LOG.info("Phase 3: Total percibidos popup filled and closed")
             except Exception as e_close:
                 LOG.warning("Phase 3: Total percibidos CERRAR: %s", e_close)
@@ -4722,6 +4723,7 @@ def run(
                         _run_context["logged_in"] = True
                         LOG.info("Test login: e.firma login completed. Browser will stay open 10s for inspection.")
                         page.wait_for_timeout(10000)
+                        LOG.info("Inspection period complete; closing browser.")
                         return True
                     finally:
                         need_logout = _run_context.get("logged_in", False) if _run_context else False
@@ -4788,6 +4790,7 @@ def run(
                         fill_initial_form(page, data, mapping)
                         LOG.info("Test initial form: initial form step complete. Browser will stay open 10s for inspection.")
                         page.wait_for_timeout(10000)
+                        LOG.info("Inspection period complete; closing browser.")
                         return True
                     finally:
                         need_logout = _run_context.get("logged_in", False) if _run_context else False
@@ -4869,6 +4872,7 @@ def run(
                         fill_iva_simplificado(page, mapping, data, sat_ui, iva_determinacion_fields=iva_det_fields)
                         LOG.info("Test full run: initial form + ISR + IVA Determinación + Pago tab complete. Browser will stay open %ss for inspection.", _TEST_INSPECTION_WAIT_MS // 1000)
                         page.wait_for_timeout(_TEST_INSPECTION_WAIT_MS)
+                        LOG.info("Inspection period complete; logging out and closing browser.")
                         run_success = True
                         return True
                     finally:
@@ -4956,6 +4960,7 @@ def run(
                         fill_iva_simplificado_determinacion(page, mapping, data)
                         LOG.info("Test IVA: login + initial form + IVA Determinación + Pago tab complete. Browser will stay open 10s for inspection.")
                         page.wait_for_timeout(10000)
+                        LOG.info("Inspection period complete; closing browser.")
                         run_success = True
                         return True
                     finally:
@@ -5037,6 +5042,7 @@ def run(
                         fill_obligation_section(page, mapping, label_map, isr_labels)
                         LOG.info("Test phase 3 complete (Phase 1 login + Phase 2 initial form + Phase 3 ISR section). Browser will stay open 10s for inspection.")
                         page.wait_for_timeout(10000)
+                        LOG.info("Inspection period complete; closing browser.")
                         return True
                     finally:
                         need_logout = _run_context.get("logged_in", False) if _run_context else False
@@ -5404,7 +5410,9 @@ def main() -> None:
             sys.exit(0 if success else 1)
 
         if args.test_api:
-            LOG.info("Step 3: Mark as Processing (skipped in test-api — no API call)")
+            mark_processing_flag = api_cfg.get("mark_processing", True)
+            if mark_processing_flag:
+                mark_processing(args.company_id, branch_id, declaration_id, base_url)
             LOG.info("Step 4: Login to SAT")
             LOG.info("Step 5: Run declaration filler (test-full, no send)")
             success = run(
@@ -5417,7 +5425,15 @@ def main() -> None:
                 use_api_efirma=True,
                 efirma_from_api=efirma,
             )
-            LOG.info("Step 6: Mark as Completed (skipped in test-api — no API call)")
+            if success:
+                # No PDF in test (declaration not sent); use placeholder path for MarkCompleted
+                mark_completed(
+                    args.company_id,
+                    branch_id,
+                    declaration_id,
+                    "/test-api/completed-no-send",
+                    base_url,
+                )
             sys.exit(0 if success else 1)
 
         # --api: production flow with MarkProcessing and MarkCompleted
