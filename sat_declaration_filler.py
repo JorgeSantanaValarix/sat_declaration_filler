@@ -742,6 +742,7 @@ def get_pending_declarations(company_id: int, branch_id: int, base_url: str) -> 
     GET GetPendingDeclarations; return list of declaration objects from response data.
     On non-200 or missing data, log and return [].
     """
+    LOG.info("Step 1: Get pending declarations (GET GetPendingDeclarations)")
     if requests is None:
         raise RuntimeError("requests is required for API mode. Install with: pip install requests")
     url = base_url.rstrip("/") + "/GetPendingDeclarations"
@@ -763,6 +764,7 @@ def get_pending_declarations(company_id: int, branch_id: int, base_url: str) -> 
     data = body.get("data")
     if not isinstance(data, list):
         return []
+    LOG.info("Step 1: Get pending declarations done, count=%d", len(data))
     return data
 
 
@@ -806,6 +808,7 @@ def prepare_declaration_from_api(declaration: dict, download_dir: str) -> tuple[
     if not excel_url or not cer_url or not key_url:
         raise ValueError("Declaration missing EXCELFILEPATH, FIELXMLCERTIFICATE, or FIELXMLKEY")
 
+    LOG.info("Step 2: Download files (Excel, CER, KEY)")
     safe_id = re.sub(r"[^\w\-]", "_", decl_id)
     excel_path = os.path.join(download_dir, f"declaration_{safe_id}.xlsx")
     cer_path = os.path.join(download_dir, f"declaration_{safe_id}.cer")
@@ -819,6 +822,7 @@ def prepare_declaration_from_api(declaration: dict, download_dir: str) -> tuple[
     LOG.info("  KEY:   %s -> %s", key_url, key_path)
     download_file(key_url, key_path)
     LOG.info("Downloaded workbook, CER, KEY for declaration %s", decl_id)
+    LOG.info("Step 2: Download files done")
 
     return excel_path, {
         "cer_path": os.path.abspath(cer_path),
@@ -829,7 +833,8 @@ def prepare_declaration_from_api(declaration: dict, download_dir: str) -> tuple[
 
 
 def mark_processing(company_id: int, branch_id: int, declaration_id: int, base_url: str) -> bool:
-    """POST MarkProcessing; return True if statusCode == 200."""
+    """POST MarkProcessing; updates status to In Progress (Status 1). Return True if statusCode == 200."""
+    LOG.info("Step 3: Mark as Processing (POST MarkProcessing)")
     if requests is None:
         raise RuntimeError("requests is required for API mode. Install with: pip install requests")
     url = base_url.rstrip("/") + "/MarkProcessing"
@@ -848,14 +853,16 @@ def mark_processing(company_id: int, branch_id: int, declaration_id: int, base_u
     ok = body.get("statusCode") == 200
     if not ok:
         LOG.warning("MarkProcessing statusCode=%s message=%s", body.get("statusCode"), body.get("message", ""))
+    LOG.info("Step 3: Mark as Processing done, ok=%s", ok)
     return ok
 
 
 def mark_completed(company_id: int, branch_id: int, declaration_id: int, pdf_file_path: str, base_url: str) -> bool:
     """
-    POST MarkCompleted with pdfFilePath. Return True if statusCode == 200.
+    POST MarkCompleted with pdfFilePath; updates status to Completed (Status 2). Return True if statusCode == 200.
     Note: Backend may expect a server-relative path; upload may be required separately.
     """
+    LOG.info("Step 6: Mark as Completed (POST MarkCompleted), pdfFilePath=%s", pdf_file_path)
     if requests is None:
         raise RuntimeError("requests is required for API mode. Install with: pip install requests")
     url = base_url.rstrip("/") + "/MarkCompleted"
@@ -875,6 +882,7 @@ def mark_completed(company_id: int, branch_id: int, declaration_id: int, pdf_fil
     ok = body.get("statusCode") == 200
     if not ok:
         LOG.warning("MarkCompleted statusCode=%s message=%s", body.get("statusCode"), body.get("message", ""))
+    LOG.info("Step 6: Mark as Completed done, ok=%s", ok)
     return ok
 
 
@@ -5381,6 +5389,8 @@ def main() -> None:
         LOG.info("=== Login to SAT ===")
 
         if args.test_api_login:
+            LOG.info("Step 3: Mark as Processing (skipped in test mode — no API call)")
+            LOG.info("Step 4: Login to SAT only")
             success = run(
                 workbook_path=None,
                 company_id=None,
@@ -5394,6 +5404,9 @@ def main() -> None:
             sys.exit(0 if success else 1)
 
         if args.test_api:
+            LOG.info("Step 3: Mark as Processing (skipped in test-api — no API call)")
+            LOG.info("Step 4: Login to SAT")
+            LOG.info("Step 5: Run declaration filler (test-full, no send)")
             success = run(
                 workbook_path=workbook_path,
                 company_id=None,
@@ -5404,12 +5417,15 @@ def main() -> None:
                 use_api_efirma=True,
                 efirma_from_api=efirma,
             )
+            LOG.info("Step 6: Mark as Completed (skipped in test-api — no API call)")
             sys.exit(0 if success else 1)
 
         # --api: production flow with MarkProcessing and MarkCompleted
         mark_processing_flag = api_cfg.get("mark_processing", True)
         if mark_processing_flag:
             mark_processing(args.company_id, branch_id, declaration_id, base_url)
+        LOG.info("Step 4: Login to SAT")
+        LOG.info("Step 5: Run declaration filler")
 
         def _on_pdf(pdf_path: str) -> None:
             mark_completed(args.company_id, branch_id, declaration_id, pdf_path, base_url)
