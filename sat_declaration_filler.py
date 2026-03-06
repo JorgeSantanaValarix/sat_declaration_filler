@@ -34,6 +34,7 @@ def _set_popup_open(open: bool) -> None:
     global _run_context
     if _run_context is not None:
         _run_context["popup_open"] = open
+        LOG.info("Popup flag set to %s", open)
 
 import openpyxl
 
@@ -1518,8 +1519,8 @@ def transition_initial_to_phase3(page: Page, mapping: dict, sat_ui: dict | None 
     cerrar_btn = page.get_by_role("button", name=cerrar_pat).first
     try:
         cerrar_btn.wait_for(state="visible", timeout=PHASE3_POPUP_WAIT_FOR_CERRAR_SEC * 1000)
-            _set_popup_open(True)
-            LOG.info("Pre-fill pop-up visible, clicking CERRAR")
+        _set_popup_open(True)
+        LOG.info("Pre-fill pop-up visible, clicking CERRAR")
     except Exception as e:
         LOG.warning("Pre-fill pop-up CERRAR button did not appear within %ss: %s", PHASE3_POPUP_WAIT_FOR_CERRAR_SEC, e)
     cerrar_ok = False
