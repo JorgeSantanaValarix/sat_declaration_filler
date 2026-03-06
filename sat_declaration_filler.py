@@ -25,7 +25,15 @@ from pathlib import Path
 
 # Used by SIGINT handler to logout from SAT when user presses Ctrl+C.
 # _run_context["logged_in"] is set True after login_sat succeeds so cleanup only calls logout when needed.
+# _run_context["popup_open"] is set True when a dialog/popup is open (ISR/IVA), False when closed; cleanup only tries to close popup if popup_open is True.
 _run_context: dict | None = None
+
+
+def _set_popup_open(open: bool) -> None:
+    """Set the run-context popup flag so Ctrl+C cleanup only runs popup-close when a popup was actually open."""
+    global _run_context
+    if _run_context is not None:
+        _run_context["popup_open"] = open
 
 import openpyxl
 
@@ -1510,7 +1518,8 @@ def transition_initial_to_phase3(page: Page, mapping: dict, sat_ui: dict | None 
     cerrar_btn = page.get_by_role("button", name=cerrar_pat).first
     try:
         cerrar_btn.wait_for(state="visible", timeout=PHASE3_POPUP_WAIT_FOR_CERRAR_SEC * 1000)
-        LOG.info("Pre-fill pop-up visible, clicking CERRAR")
+            _set_popup_open(True)
+            LOG.info("Pre-fill pop-up visible, clicking CERRAR")
     except Exception as e:
         LOG.warning("Pre-fill pop-up CERRAR button did not appear within %ss: %s", PHASE3_POPUP_WAIT_FOR_CERRAR_SEC, e)
     cerrar_ok = False
@@ -1539,6 +1548,7 @@ def transition_initial_to_phase3(page: Page, mapping: dict, sat_ui: dict | None 
         except Exception as e:
             LOG.warning("Could not click CERRAR on pop-up: %s", e)
     if cerrar_ok:
+        _set_popup_open(False)
         page.wait_for_timeout(1500)
     return cerrar_ok
 
@@ -2412,6 +2422,7 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict, sat_ui: dict |
             filled = False
             try:
                 page.get_by_text("Devoluciones, descuentos y bonificaciones facturadas", exact=False).first.wait_for(state="visible", timeout=400)
+                _set_popup_open(True)
                 LOG.info("Phase 3: Descuentos popup (Devoluciones, descuentos y bonificaciones facturadas) visible")
             except Exception:
                 pass
@@ -2522,6 +2533,7 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict, sat_ui: dict |
                 LOG.warning("Phase 3: could not find Descuentos popup textbox (*Descuentos...integrantes por copropiedad)")
             page.wait_for_timeout(60)
             page.get_by_role("button", name=re.compile(r"CERRAR", re.I)).first.click(timeout=300)
+            _set_popup_open(False)
             LOG.info("Phase 3: Descuentos popup filled and closed")
         else:
             LOG.warning("Phase 3: could not click Descuentos CAPTURAR link")
@@ -2594,6 +2606,7 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict, sat_ui: dict |
                         continue
                 if dialog is None:
                     dialog = page
+                _set_popup_open(True)
                 # Click AGREGAR inside the popup so Concepto/Importe row is ready
                 if dialog != page:
                     try:
@@ -2733,6 +2746,7 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict, sat_ui: dict |
                             pass
                         print(f"{_debug_ts()} Phase 3: Ingresos a disminuir: clicking CERRAR")
                         btn_scope.get_by_role("button", name=re.compile(r"CERRAR", re.I)).first.click(timeout=600)
+                        _set_popup_open(False)
                         LOG.info("Phase 3: Ingresos a disminuir popup filled (importe=%s), closed", importe_str)
                         page.wait_for_timeout(50)
                     except Exception as e_btn:
@@ -2792,6 +2806,7 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict, sat_ui: dict |
                         continue
                 if dialog is None:
                     dialog = page
+                _set_popup_open(True)
                 # Click AGREGAR inside the popup so Concepto/Importe row is ready
                 if dialog != page:
                     try:
@@ -2890,6 +2905,7 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict, sat_ui: dict |
                         except Exception:
                             pass
                         btn_scope.get_by_role("button", name=re.compile(r"CERRAR", re.I)).first.click(timeout=1500)
+                        _set_popup_open(False)
                         LOG.info("Phase 3: Ingresos adicionales popup filled (diff=%.2f), closed", diferencia_adicionales)
                         page.wait_for_timeout(150)
                     except Exception as e_btn:
@@ -2939,6 +2955,7 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict, sat_ui: dict |
                     continue
             if dialog is None:
                 dialog = page
+            _set_popup_open(True)
             # Three Excel labels (col D or E) → SAT Concepto dropdown option; only add when value is not "-" or missing
             total_percibidos_entries = [
                 ("Actividad empresarial", "Actividad empresarial"),
@@ -3076,6 +3093,7 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict, sat_ui: dict |
             try:
                 btn_scope = dialog if dialog != page else page
                 btn_scope.get_by_role("button", name=re.compile(r"CERRAR", re.I)).first.click(timeout=2000)
+                _set_popup_open(False)
                 LOG.info("Phase 3: Total percibidos popup filled and closed")
             except Exception as e_close:
                 LOG.warning("Phase 3: Total percibidos CERRAR: %s", e_close)
@@ -3280,6 +3298,7 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict, sat_ui: dict |
                     LOG.warning("Phase 4: VER DETALLE was clicked but popup did not appear (dialog not visible); treating as failed")
                     ver_detalle_clicked = False
                 else:
+                    _set_popup_open(True)
                     LOG.info("Phase 4: popup appeared")
             else:
                 LOG.warning("Phase 4: could not click VER DETALLE next to %s", _isr_row)
@@ -3464,6 +3483,7 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict, sat_ui: dict |
             page.wait_for_timeout(150)
             LOG.info("Phase 4: clicking CERRAR in ISR retenido popup")
             page.get_by_role("button", name=re.compile(r"CERRAR", re.I)).first.click(timeout=1500)
+            _set_popup_open(False)
             page.wait_for_timeout(200)
             LOG.info("Phase 4: CERRAR clicked, popup closed; next: GUARDAR and wait for load")
         LOG.info("Phase 4: clicking GUARDAR (after Determinación / ISR retenido popup)")
@@ -3895,10 +3915,12 @@ def fill_iva_simplificado_determinacion(page: Page, mapping: dict, data: dict, i
             try:
                 if page.get_by_role("dialog").first.is_visible(timeout=_TEXTBOX_FILL_VISIBLE_MS):
                     dialog = page.get_by_role("dialog").first
+                    _set_popup_open(True)
                     LOG.info("IVA Determinación: popup visible (dialog role)")
                     break
                 if page.get_by_text(re.compile(r"IVA\s+acreditable\s+del\s+periodo", re.I)).first.is_visible():
                     dialog = page.get_by_text(re.compile(r"IVA\s+acreditable\s+del\s+periodo", re.I)).first.locator("xpath=ancestor::*[contains(@class,'modal') or @role='dialog'][1]").first
+                    _set_popup_open(True)
                     LOG.info("IVA Determinación: popup visible (IVA acreditable del periodo title)")
                     break
             except Exception:
@@ -3938,6 +3960,7 @@ def fill_iva_simplificado_determinacion(page: Page, mapping: dict, data: dict, i
         page.wait_for_timeout(_TEXTBOX_FILL_WAIT_MS)
         LOG.info("IVA Determinación popup: clicking CERRAR")
         page.get_by_role("button", name=re.compile(r"CERRAR", re.I)).first.click(timeout=1500)
+        _set_popup_open(False)
         LOG.info("IVA Determinación popup: CERRAR clicked; popup closed")
         page.wait_for_timeout(200)  # Let modal fully close so main form GUARDAR is the first match
 
@@ -4201,14 +4224,18 @@ def _cleanup_on_interrupt(
         "Ctrl+C cleanup [%s]: browser open, logged in. Will close popup if visible, then logout, then close browser.",
         run_mode,
     )
-    LOG.info("Ctrl+C cleanup: checking for open popup (CERRAR)...")
-    popup_closed = False
-    try:
-        popup_closed = _dismiss_popup_cerrar_if_visible(page, mapping, sat_ui)
-    except Exception:
-        pass
-    if not popup_closed:
-        LOG.info("Ctrl+C cleanup: no popup visible.")
+    popup_was_open = _run_context.get("popup_open", False) if _run_context else False
+    if popup_was_open:
+        LOG.info("Ctrl+C cleanup: popup was open, checking for CERRAR...")
+        popup_closed = False
+        try:
+            popup_closed = _dismiss_popup_cerrar_if_visible(page, mapping, sat_ui)
+        except Exception:
+            pass
+        if not popup_closed:
+            LOG.info("Ctrl+C cleanup: could not close popup (CERRAR not found or failed).")
+    else:
+        LOG.info("Ctrl+C cleanup: no popup was open, skipping popup close.")
     LOG.info("Ctrl+C cleanup: logging out from SAT...")
     try:
         if set_timeout_before_logout:
@@ -4717,7 +4744,7 @@ def run(
                     browser = p.chromium.launch(headless=False)
                     context = browser.new_context(accept_downloads=True)
                     page = context.new_page()
-                    _run_context = {"page": page, "mapping": mapping, "logged_in": False, "run_mode": "test_login"}
+                    _run_context = {"page": page, "mapping": mapping, "logged_in": False, "popup_open": False, "run_mode": "test_login"}
                     try:
                         login_sat(page, efirma, mapping, base_url, sat_ui)
                         _run_context["logged_in"] = True
@@ -4776,7 +4803,7 @@ def run(
                     browser = p.chromium.launch(headless=False)
                     context = browser.new_context(accept_downloads=True)
                     page = context.new_page()
-                    _run_context = {"page": page, "mapping": mapping, "logged_in": False, "run_mode": "test_initial_form"}
+                    _run_context = {"page": page, "mapping": mapping, "logged_in": False, "popup_open": False, "run_mode": "test_initial_form"}
                     try:
                         sat_ui = get_sat_ui(config)
                         login_sat(page, efirma, mapping, base_url, sat_ui)
@@ -4844,7 +4871,7 @@ def run(
                     browser = p.chromium.launch(headless=False)
                     context = browser.new_context(accept_downloads=True)
                     page = context.new_page()
-                    _run_context = {"page": page, "mapping": mapping, "logged_in": False, "run_mode": "test_full"}
+                    _run_context = {"page": page, "mapping": mapping, "logged_in": False, "popup_open": False, "run_mode": "test_full"}
                     try:
                         login_sat(page, efirma, mapping, base_url, sat_ui)
                         _run_context["logged_in"] = True
@@ -4936,7 +4963,7 @@ def run(
                     browser = p.chromium.launch(headless=False)
                     context = browser.new_context(accept_downloads=True)
                     page = context.new_page()
-                    _run_context = {"page": page, "mapping": mapping, "logged_in": False, "run_mode": "test_iva"}
+                    _run_context = {"page": page, "mapping": mapping, "logged_in": False, "popup_open": False, "run_mode": "test_iva"}
                     try:
                         login_sat(page, efirma, mapping, base_url, sat_ui)
                         _run_context["logged_in"] = True
@@ -5016,7 +5043,7 @@ def run(
                     browser = p.chromium.launch(headless=False)
                     context = browser.new_context(accept_downloads=True)
                     page = context.new_page()
-                    _run_context = {"page": page, "mapping": mapping, "logged_in": False, "run_mode": "test_phase3"}
+                    _run_context = {"page": page, "mapping": mapping, "logged_in": False, "popup_open": False, "run_mode": "test_phase3"}
                     try:
                         LOG.info("Phase 1: Logging in to SAT (e.firma)")
                         login_sat(page, efirma, mapping, base_url, sat_ui)
@@ -5105,7 +5132,7 @@ def run(
                 browser = p.chromium.launch(headless=False)  # headless=False so user can see; set True for automation
                 context = browser.new_context(accept_downloads=True)
                 page = context.new_page()
-                _run_context = {"page": page, "mapping": mapping, "logged_in": False, "run_mode": "normal"}
+                _run_context = {"page": page, "mapping": mapping, "logged_in": False, "popup_open": False, "run_mode": "normal"}
                 try:
                     login_sat(page, efirma, mapping, base_url, sat_ui)
                     _run_context["logged_in"] = True
