@@ -13,7 +13,9 @@ import json
 import logging
 import os
 import re
+import shutil
 import signal
+import subprocess
 import sys
 import tempfile
 import threading
@@ -22,6 +24,7 @@ from datetime import datetime
 from pathlib import Path
 
 # Used by SIGINT handler to logout from SAT when user presses Ctrl+C.
+# _run_context["logged_in"] is set True after login_sat succeeds so cleanup only calls logout when needed.
 _run_context: dict | None = None
 
 import openpyxl
@@ -112,13 +115,16 @@ def _row_col_to_a1(row: int, col: int) -> str:
 
 _XLCALC_IMPORT_FAILED: bool | None = None  # None=not tried, True=failed, False=ok
 _XLCALC_TIMEOUT_SEC = 3   # skip xlcalculator if loading takes longer (fail fast; openpyxl usually sufficient)
+_XLCALC_CACHE_TIMEOUT_SEC = 60  # longer timeout for ensure_excel_cache_values (before login); workbook may be large
 
 
-def _xlcalculator_evaluator(workbook_path: str):
+def _xlcalculator_evaluator(workbook_path: str, timeout_sec: int | None = None):
     """
     Build xlcalculator model once (can be slow/hang). Runs with timeout; returns (Evaluator, None) or (None, error_msg).
+    timeout_sec: max seconds to build model; default _XLCALC_TIMEOUT_SEC. Use _XLCALC_CACHE_TIMEOUT_SEC for cache step.
     """
     global _XLCALC_IMPORT_FAILED
+    timeout = timeout_sec if timeout_sec is not None else _XLCALC_TIMEOUT_SEC
     try:
         from xlcalculator import ModelCompiler, Evaluator
     except ImportError:
@@ -141,12 +147,12 @@ def _xlcalculator_evaluator(workbook_path: str):
         except Exception as e:
             err.append(str(e))
 
-    LOG.info("xlcalculator: loading workbook (timeout %ss)...", _XLCALC_TIMEOUT_SEC)
+    LOG.info("xlcalculator: loading workbook (timeout %ss)...", timeout)
     t = threading.Thread(target=_build, daemon=True)
     t.start()
-    t.join(timeout=_XLCALC_TIMEOUT_SEC)
+    t.join(timeout=timeout)
     if t.is_alive():
-        LOG.warning("xlcalculator: loading timed out after %ss; skipping formula fallback", _XLCALC_TIMEOUT_SEC)
+        LOG.warning("xlcalculator: loading timed out after %ss; skipping formula fallback", timeout)
         return None, "timeout"
     if err:
         return None, err[0]
@@ -169,16 +175,252 @@ def _evaluate_cell(evaluator, sheet_name: str, row: int, col: int) -> float | No
         return None
 
 
-def read_impuestos(workbook_path: str) -> dict:
+def _parse_period_cell(value) -> tuple[int | None, int | None]:
+    """Parse a period string like 'Enero 2026' from Impuestos sheet into (year, month). Returns (None, None) if not parseable."""
+    if value is None:
+        return None, None
+    s = str(value).strip()
+    if not s:
+        return None, None
+    # Excel may have stored as datetime
+    if hasattr(value, "year") and hasattr(value, "month"):
+        return int(getattr(value, "year")), int(getattr(value, "month"))
+    # Tokenize: expect "MonthName YYYY" or "MonthNameYYYY"
+    parts = re.split(r"[\s]+", s, maxsplit=1)
+    if not parts:
+        return None, None
+    month_name = parts[0].strip().lower()
+    year_val = None
+    if len(parts) > 1 and re.match(r"^\d{4}$", parts[1].strip()):
+        year_val = int(parts[1].strip())
+    else:
+        # Try to find 4-digit year anywhere in string
+        year_m = re.search(r"\b(20\d{2})\b", s)
+        if year_m:
+            year_val = int(year_m.group(1))
+    month_num = _SAT_MES_NAME_TO_NUM.get(month_name)
+    if month_num is not None and year_val is not None:
+        return year_val, month_num
+    return None, None
+
+
+def _resolve_simple_ref_value(ws, row: int, col: int, visited: set | None = None):
+    """Resolve a cell that may be a number or a simple formula (=A1, =+F8). Returns float or None. Uses visited to avoid cycles.
+    Empty cells (None) are treated as 0.0 so we can write a value and save (avoids leaving formulas when refs are empty)."""
+    visited = visited or set()
+    key = (row, col)
+    if key in visited:
+        return None
+    visited.add(key)
+    cell = ws.cell(row=row, column=col)
+    val = cell.value
+    if val is None:
+        return 0.0  # empty ref cell -> 0.0 so we write and save (read_impuestos shows 0.00 for these)
+    if isinstance(val, (int, float)):
+        return float(val)
+    if isinstance(val, str) and val.strip().startswith("="):
+        ref = _parse_cell_ref(val)
+        if ref:
+            r2, c2 = ref
+            return _resolve_simple_ref_value(ws, r2, c2, visited)
+    return None
+
+
+def ensure_excel_cache_values(workbook_path: str):
+    """
+    Open the workbook once, evaluate formula cells in the Impuestos sheet (ISR/IVA ranges)
+    in memory (simple refs =+F8 or xlcalculator), and return the open workbook. Caller must
+    pass it to read_impuestos(workbook_path, workbook=wb) and then close it. Keeps file open
+    so read_impuestos sees the same in-memory values (no save/re-open); works when ref chains
+    are formulas (we recurse until we hit a number or treat empty as 0.0).
+    Returns open openpyxl Workbook or None on error/missing file.
+    """
+    if not workbook_path or not os.path.isfile(workbook_path):
+        LOG.debug("ensure_excel_cache_values: skip (path empty or file missing): %s", workbook_path or "(empty)")
+        return None
+    LOG.info("ensure_excel_cache_values: opening %s once, keeping open for read_impuestos", workbook_path)
+    try:
+        wb = openpyxl.load_workbook(workbook_path, read_only=False, data_only=False)
+        if IMPUESTOS_SHEET not in wb.sheetnames:
+            LOG.debug("ensure_excel_cache_values: sheet %s not found in %s, sheets: %s",
+                      IMPUESTOS_SHEET, workbook_path, wb.sheetnames)
+            wb.close()
+            return None
+        ws = wb[IMPUESTOS_SHEET]
+        evaluator, err = _xlcalculator_evaluator(workbook_path, timeout_sec=_XLCALC_CACHE_TIMEOUT_SEC)
+        use_simple_ref_fallback = False
+        if evaluator is None:
+            if err == "not installed":
+                LOG.debug("ensure_excel_cache_values: xlcalculator not installed, using simple-ref fallback")
+            elif err == "timeout":
+                LOG.warning(
+                    "ensure_excel_cache_values: xlcalculator timed out (workbook may be large or complex); "
+                    "using simple-ref fallback (recurse refs in memory)"
+                )
+            else:
+                LOG.debug("ensure_excel_cache_values: xlcalculator unavailable (%s), using simple-ref fallback", err)
+            use_simple_ref_fallback = True
+
+        updated = 0
+        if not use_simple_ref_fallback and evaluator is not None:
+            for start_row, end_row in (ISR_RANGE, IVA_RANGE):
+                for row in range(start_row, end_row + 1):
+                    for col in (5, 6):  # E and F
+                        cell = ws.cell(row=row, column=col)
+                        val = cell.value
+                        if isinstance(val, str) and val.strip().startswith("="):
+                            xval = _evaluate_cell(evaluator, IMPUESTOS_SHEET, row, col)
+                            if xval is not None:
+                                cell.value = xval
+                                updated += 1
+        else:
+            for start_row, end_row in (ISR_RANGE, IVA_RANGE):
+                for row in range(start_row, end_row + 1):
+                    for col in (5, 6):  # E and F
+                        cell = ws.cell(row=row, column=col)
+                        val = cell.value
+                        if isinstance(val, str) and val.strip().startswith("="):
+                            resolved = _resolve_simple_ref_value(ws, row, col)
+                            if resolved is not None:
+                                cell.value = resolved
+                                updated += 1
+
+        if updated > 0:
+            LOG.info("ensure_excel_cache_values: updated %d formula cells in memory (workbook stays open)", updated)
+        else:
+            LOG.debug("ensure_excel_cache_values: no formula cells to update in ISR/IVA ranges")
+        return wb
+    except Exception as e:
+        LOG.warning("ensure_excel_cache_values failed for %s: %s", workbook_path, e)
+        return None
+
+
+def _year_month_from_worksheet(ws) -> tuple[int | None, int | None]:
+    """Read year/month from an open Impuestos worksheet: cell 4 rows above 'Total Impuestos por pagar' (cols E or F)."""
+    try:
+        label_lower = TOTAL_IMPUESTOS_POR_PAGAR_LABEL.strip().lower()
+        max_scan = min(ws.max_row, 120) if hasattr(ws, "max_row") else 120
+        for row in range(1, max_scan + 1):
+            for label_col, value_col in ((4, 5), (5, 6)):
+                cell_val = ws.cell(row=row, column=label_col).value
+                if cell_val is None:
+                    continue
+                if label_lower in str(cell_val).strip().lower():
+                    period_row = row - 4
+                    if period_row < 1:
+                        continue
+                    for col in (5, 6):
+                        period_val = ws.cell(row=period_row, column=col).value
+                        y, m = _parse_period_cell(period_val)
+                        if y is not None and m is not None:
+                            return y, m
+    except Exception:
+        pass
+    return None, None
+
+
+def _year_month_from_impuestos_sheet(workbook_path: str) -> tuple[int | None, int | None]:
+    """When year/month are not in the Excel filename, read from Impuestos sheet: cell 4 rows above 'Total Impuestos por pagar' (cols E or F)."""
+    try:
+        wb = openpyxl.load_workbook(workbook_path, read_only=False, data_only=True)
+        if IMPUESTOS_SHEET not in wb.sheetnames:
+            wb.close()
+            return None, None
+        ws = wb[IMPUESTOS_SHEET]
+        label_lower = TOTAL_IMPUESTOS_POR_PAGAR_LABEL.strip().lower()
+        max_scan = min(ws.max_row, 120) if hasattr(ws, "max_row") else 120
+        for row in range(1, max_scan + 1):
+            for label_col, value_col in ((4, 5), (5, 6)):  # D->E, E->F
+                cell_val = ws.cell(row=row, column=label_col).value
+                if cell_val is None:
+                    continue
+                if label_lower in str(cell_val).strip().lower():
+                    period_row = row - 4
+                    if period_row < 1:
+                        continue
+                    for col in (5, 6):  # try E and F
+                        period_val = ws.cell(row=period_row, column=col).value
+                        y, m = _parse_period_cell(period_val)
+                        if y is not None and m is not None:
+                            wb.close()
+                            return y, m
+        wb.close()
+    except Exception as e:
+        LOG.debug("Year/month from Impuestos sheet fallback: %s", e)
+    return None, None
+
+
+def read_impuestos(workbook_path: str, workbook=None) -> dict:
     """
     Read Impuestos tab. Two layouts supported:
     - Layout 1: label in column D, value in column E (D4:E29 ISR, D33:E58 IVA).
     - Layout 2: label in column E, value in column F (same row ranges).
-    Values in E or F can be numeric or formulas. We use data_only=True so formula cells
-    return the cached result (what you see in Excel). If the file was not saved in Excel
-    and the cache is missing, we resolve simple refs (e.g. =F8, =+E8) by following the reference.
+    When workbook is provided (open workbook from ensure_excel_cache_values), reads from it
+    in memory (cells already have resolved values). Otherwise loads from workbook_path and
+    may resolve formulas/cache. Caller must not close workbook when passing it in.
     Returns dict with keys: label_map (label->value), year, month, periodicidad, tipo_declaracion.
     """
+    if workbook is not None:
+        if IMPUESTOS_SHEET not in workbook.sheetnames:
+            raise ValueError(f"Sheet '{IMPUESTOS_SHEET}' not found in workbook. Sheets: {workbook.sheetnames}")
+        ws = workbook[IMPUESTOS_SHEET]
+        label_map = {}
+        for start_row, end_row in (ISR_RANGE, IVA_RANGE):
+            for row in range(start_row, end_row + 1):
+                label_d = _cell_value(ws.cell(row=row, column=4))
+                value_e = ws.cell(row=row, column=5).value
+                if label_d and str(label_d).strip():
+                    v = value_e
+                    if v is not None and not (isinstance(v, str) and not v.strip()):
+                        label_map[str(label_d).strip()] = _parse_currency(v) if not isinstance(v, (int, float)) else float(v)
+                    else:
+                        label_map[str(label_d).strip()] = 0.0
+                label_e = _cell_value(ws.cell(row=row, column=5))
+                value_f = ws.cell(row=row, column=6).value
+                if label_e and str(label_e).strip() and not re.match(r"^[\d\s\$,.\-]+$", str(label_e).strip()):
+                    v = value_f
+                    if v is not None and not (isinstance(v, str) and not v.strip()):
+                        label_map[str(label_e).strip()] = _parse_currency(v) if not isinstance(v, (int, float)) else float(v)
+                    else:
+                        label_map[str(label_e).strip()] = 0.0
+        year, month = None, None
+        basename = os.path.basename(workbook_path)
+        m = re.match(r"^(\d{4})(\d{2})_", basename)
+        if m:
+            year, month = int(m.group(1)), int(m.group(2))
+        if year is None or month is None:
+            year_fb, month_fb = _year_month_from_worksheet(ws)
+            if year_fb is not None:
+                year = year_fb
+            if month_fb is not None:
+                month = month_fb
+            if year is not None or month is not None:
+                LOG.info("Year/month from Impuestos sheet (4 rows above '%s'): %s %s", TOTAL_IMPUESTOS_POR_PAGAR_LABEL, year, month)
+        if label_map.get("Base gravable del pago provisional") == 0.0:
+            fallback = label_map.get("Ingresos cobrados y amparados por factura del mes")
+            if fallback is not None and _parse_currency(fallback) != 0.0:
+                label_map["Base gravable del pago provisional"] = _parse_currency(fallback)
+                LOG.info("Excel (in memory): using fallback for Base gravable: %.2f", label_map["Base gravable del pago provisional"])
+        periodicidad = label_map.get("Periodicidad") or 1
+        if isinstance(periodicidad, str):
+            periodicidad = 1
+        LOG.info(
+            "Excel opened (in memory): %s | Sheet=%s, layouts D/E and E/F, rows ISR %s–%s, IVA %s–%s | %s labels read.",
+            workbook_path, IMPUESTOS_SHEET, ISR_RANGE[0], ISR_RANGE[1], IVA_RANGE[0], IVA_RANGE[1], len(label_map),
+        )
+        periodo_str = f"{month:02d}" if month is not None else "(none)"
+        LOG.info(
+            "Phase 2: initial form data to fill: Ejercicio=%s, Periodicidad=%s, Período=%s, Tipo=Normal",
+            year, periodicidad, periodo_str,
+        )
+        return {
+            "label_map": label_map,
+            "year": year,
+            "month": month,
+            "periodicidad": periodicidad,
+            "tipo_declaracion": "Normal",
+        }
+
     wb = openpyxl.load_workbook(workbook_path, read_only=False, data_only=True)
     if IMPUESTOS_SHEET not in wb.sheetnames:
         raise ValueError(f"Sheet '{IMPUESTOS_SHEET}' not found in workbook. Sheets: {wb.sheetnames}")
@@ -307,6 +549,19 @@ def read_impuestos(workbook_path: str) -> dict:
         year = int(m.group(1))
         month = int(m.group(2))
 
+    # Fallback: if year/month not in filename, read from Impuestos sheet (4 rows above "Total Impuestos por pagar", cols E or F)
+    if year is None or month is None:
+        year_fb, month_fb = _year_month_from_impuestos_sheet(workbook_path)
+        if year_fb is not None and month_fb is not None:
+            if year is None:
+                year = year_fb
+            if month is None:
+                month = month_fb
+            LOG.info(
+                "Year/month from Impuestos sheet (4 rows above '%s'): %s %s",
+                TOTAL_IMPUESTOS_POR_PAGAR_LABEL, year, month,
+            )
+
     # Periodicidad: default 1 mensual; could be read from sheet if present
     periodicidad = label_map.get("Periodicidad") or 1
     if isinstance(periodicidad, str):
@@ -315,7 +570,7 @@ def read_impuestos(workbook_path: str) -> dict:
     tipo_declaracion = "Normal"
     periodo_str = f"{month:02d}" if month is not None else "(none)"
     LOG.info(
-        "Phase 2: initial form data to fill: Ejercicio=%s, Periodicidad=%s, Período=%s, Tipo=%s (year/month from filename YYYYMM_; periodicidad from sheet)",
+        "Phase 2: initial form data to fill: Ejercicio=%s, Periodicidad=%s, Período=%s, Tipo=%s (year/month from filename or Impuestos sheet; periodicidad from sheet)",
         year, periodicidad, periodo_str, tipo_declaracion,
     )
     return {
@@ -374,6 +629,89 @@ def get_efirma_from_db(company_id: int, branch_id: int, config: dict) -> dict:
         }
     finally:
         conn.close()
+
+
+def _find_libreoffice_executable(config: dict) -> str | None:
+    """Return path to LibreOffice/soffice executable, or None if not found. Checks config then PATH then Windows install path."""
+    path_cfg = (config.get("libreoffice_path") or "").strip()
+    if path_cfg and os.path.isfile(path_cfg):
+        return path_cfg
+    if path_cfg:
+        exe = shutil.which(path_cfg)
+        if exe:
+            return exe
+    for name in ("soffice", "libreoffice"):
+        exe = shutil.which(name)
+        if exe:
+            return exe
+    if sys.platform == "win32":
+        for base in (
+            os.path.expandvars(r"%ProgramFiles%\LibreOffice\program\soffice.exe"),
+            os.path.expandvars(r"%ProgramFiles(x86)%\LibreOffice\program\soffice.exe"),
+        ):
+            if base and os.path.isfile(base):
+                return base
+    return None
+
+
+def recalc_excel_with_libreoffice(workbook_path: str, config: dict) -> bool:
+    """
+    Use LibreOffice headless to open the xlsx, recalculate formulas, and save.
+    Overwrites the original file with the recalculated version (Option A) so openpyxl
+    sees cached values. Returns True on success, False on failure (log and continue).
+    """
+    if not workbook_path or not os.path.isfile(workbook_path):
+        return False
+    if not workbook_path.lower().endswith(".xlsx"):
+        LOG.debug("recalc_excel_with_libreoffice: skip (not .xlsx): %s", workbook_path)
+        return False
+    exe = _find_libreoffice_executable(config)
+    if not exe:
+        LOG.debug("LibreOffice not found; skipping headless recalc. Set libreoffice_path in config or install LibreOffice.")
+        return False
+    timeout_sec = int(config.get("libreoffice_recalc_timeout_sec", 120))
+    abs_path = os.path.abspath(workbook_path)
+    out_dir = None
+    try:
+        out_dir = tempfile.mkdtemp(prefix="sat_recalc_")
+        cmd = [
+            exe,
+            "--headless",
+            "--convert-to", "xlsx",
+            "--outdir", out_dir,
+            abs_path,
+        ]
+        LOG.info("LibreOffice headless recalc: %s (timeout %ss)", workbook_path, timeout_sec)
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout_sec,
+            cwd=os.path.dirname(abs_path) or ".",
+        )
+        if result.returncode != 0:
+            LOG.warning("LibreOffice recalc failed (exit %s): %s", result.returncode, (result.stderr or result.stdout or "")[:500])
+            return False
+        basename = os.path.basename(abs_path)
+        converted = os.path.join(out_dir, basename)
+        if not os.path.isfile(converted):
+            LOG.warning("LibreOffice recalc: output file not found at %s", converted)
+            return False
+        shutil.copy2(converted, abs_path)
+        LOG.info("LibreOffice recalc succeeded; file updated with cached values.")
+        return True
+    except subprocess.TimeoutExpired:
+        LOG.warning("LibreOffice recalc timed out after %ss.", timeout_sec)
+        return False
+    except Exception as e:
+        LOG.warning("LibreOffice recalc failed: %s", e)
+        return False
+    finally:
+        if out_dir and os.path.isdir(out_dir):
+            try:
+                shutil.rmtree(out_dir, ignore_errors=True)
+            except Exception:
+                pass
 
 
 def load_config(path: str | None) -> dict:
@@ -701,6 +1039,11 @@ _SAT_PERIODO_LABEL = {
     1: "Enero", 2: "Febrero", 3: "Marzo", 4: "Abril", 5: "Mayo", 6: "Junio",
     7: "Julio", 8: "Agosto", 9: "Septiembre", 10: "Octubre", 11: "Noviembre", 12: "Diciembre",
 }
+# Reverse: Spanish month name (normalized) -> month number, for parsing period from Impuestos sheet (e.g. "Enero 2026").
+_SAT_MES_NAME_TO_NUM = {v.strip().lower(): k for k, v in _SAT_PERIODO_LABEL.items()}
+
+# Label in Impuestos sheet for the total row; year/month fallback is 4 rows above this row (cols E or F).
+TOTAL_IMPUESTOS_POR_PAGAR_LABEL = "Total Impuestos por pagar"
 
 
 def _try_fill(scope: Page | Frame, page_for_wait: Page, mapping: dict, key: str, value: str | float, *, is_file: bool = False) -> bool:
@@ -830,6 +1173,8 @@ def _try_click(page, mapping: dict, key: str) -> bool:
 
 def login_sat(page, efirma: dict, mapping: dict, base_url: str = SAT_PORTAL_URL, sat_ui: dict | None = None) -> None:
     """Open SAT portal, click e.firma, fill .cer, .key, password, Enviar."""
+    LOG.info("")
+    LOG.info("===== Section: Login (e.firma) =====")
     sat_ui = sat_ui or DEFAULT_SAT_UI
     t0 = time.perf_counter()
 
@@ -979,6 +1324,8 @@ DRAFT_BODY_TIMEOUT_MS = 800  # per-call timeout for body.inner_text so we can po
 
 def dismiss_draft_if_present(page: Page, mapping: dict, sat_ui: dict | None = None) -> bool:
     """If 'Formulario no concluido' is shown (saved draft), click trash icon and confirm 'Sí' to delete; then we can continue to initial form. Returns True if a draft was dismissed."""
+    LOG.info("")
+    LOG.info("===== Section: Draft declaration =====")
     sat_ui = sat_ui or DEFAULT_SAT_UI
     LOG.info("Phase 2: Checking for draft declaration (Formulario no concluido) after Presentar declaración, before filling initial form...")
     page.wait_for_timeout(DRAFT_INITIAL_WAIT_MS)
@@ -1965,6 +2312,8 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict, sat_ui: dict |
     - Total percibidos CAPTURAR popup.
     Phase 4 (after Ingresos completed): GUARDAR → Determinación tab → VER DETALLE (ISR retenido por personas morales) → popup fill "ISR retenido no acreditable" from Excel (label "ISR retenido") → CERRAR → GUARDAR.
     Phase 5 (after Phase 4): Pago tab → *¿Tienes compensaciones por aplicar? → No, *¿Tienes estímulos por aplicar? → No → GUARDAR → wait for load."""
+    LOG.info("")
+    LOG.info("===== Section: ISR (simplificado de confianza) =====")
     LOG.info("Phase 3: Filling Ingresos form...")
     label_map = data.get("label_map") or {}
     # Always "No" per requirements for *¿Los ingresos fueron obtenidos a través de copropiedad?
@@ -2548,9 +2897,10 @@ def fill_isr_ingresos_form(page: Page, mapping: dict, data: dict, sat_ui: dict |
         page.wait_for_timeout(PHASE3_SECTION_GAP_MS)
     LOG.info("")
     LOG.info("===== Phase 3: sección 6 - Total de ingresos percibidos por la actividad =====")
-    # 6. Total de ingresos percibidos por la actividad: press CAPTURAR only when diff > 0 (when diff=0 the CAPTURAR option does not appear on SAT). Then popup "Total de ingresos efectivamente cobrados" → for each Excel row (Actividad empresarial, Actividad profesional, Uso o goce temporal) with value != "-": AGREGAR → Concepto → Importe → GUARDAR → ACEPTAR → then CERRAR
-    if not need_ingresos_adicionales:
-        LOG.info("Phase 3: Total percibidos skipped (diff=%.2f), CAPTURAR not shown on SAT", diferencia_adicionales)
+    # 6. Total de ingresos percibidos por la actividad: run when |diff| > 1 (diff > 1 or diff < -1). When -1 <= diff <= 1 skip (CAPTURAR/breakdown not needed).
+    need_total_percibidos = abs(diferencia_adicionales) > 1
+    if not need_total_percibidos:
+        LOG.info("Phase 3: Total percibidos skipped (|diff|=%.2f <= 1)", abs(diferencia_adicionales))
     else:
         try:
             capturar_clicked = _try_click(page, mapping, "_isr_ingresos_capturar_total")
@@ -3361,7 +3711,7 @@ def fill_iva_simplificado(page: Page, mapping: dict, data: dict, sat_ui: dict | 
     """
     sat_ui = sat_ui or DEFAULT_SAT_UI
     LOG.info("")
-    LOG.info("===== IVA simplificado de confianza (central) =====")
+    LOG.info("===== Section: IVA (simplificado de confianza) =====")
     if not click_administracion_declaracion(page, mapping, sat_ui):
         LOG.warning("IVA simplificado: could not click ADMINISTRACIÓN DE LA DECLARACIÓN")
     page.wait_for_timeout(400)
@@ -3369,7 +3719,7 @@ def fill_iva_simplificado(page: Page, mapping: dict, data: dict, sat_ui: dict | 
         LOG.warning("IVA simplificado: could not click IVA simplificado de confianza")
     page.wait_for_timeout(400)
     fill_iva_simplificado_determinacion(page, mapping, data, iva_determinacion_fields=iva_determinacion_fields)
-    LOG.info("===== IVA simplificado de confianza (central) complete =====")
+    LOG.info("===== Section: IVA (simplificado de confianza) complete =====")
     LOG.info("")
 
 
@@ -3583,6 +3933,11 @@ def fill_iva_simplificado_determinacion(page: Page, mapping: dict, data: dict, i
         page.wait_for_timeout(200)  # Let modal fully close so main form GUARDAR is the first match
 
     # GUARDAR main form (fail fast: 2s per attempt so we don't burn ~1 min on wrong/modal GUARDAR)
+    LOG.info("IVA Determinación: scrolling to top of page before GUARDAR")
+    try:
+        page.evaluate("window.scrollTo(0, 0)")
+    except Exception as e:
+        LOG.debug("IVA Determinación: scroll to top failed: %s", e)
     LOG.info("IVA Determinación: clicking GUARDAR (main form)")
     guardar_ok = False
     _guardar_wait_ms = 2000
@@ -3813,6 +4168,72 @@ def _fill_pago_custom_dropdown(page: Page, label_substring: str, option_text: st
     except Exception as e:
         LOG.debug("Phase 5 custom dropdown (%s → %s) failed: %s", label_substring, option_text, e)
         return False
+
+
+def _cleanup_on_interrupt(
+    page: Page,
+    mapping: dict,
+    sat_ui: dict | None,
+    need_logout: bool,
+    run_mode: str,
+    *,
+    post_logout_wait_ms: int = 0,
+    set_timeout_before_logout: bool = False,
+) -> None:
+    """Run Ctrl+C cleanup: if not logged in, close browser only; if logged in, close popup (if any) then logout then close browser. Caller closes page/context/browser."""
+    if not need_logout:
+        LOG.info(
+            "Ctrl+C cleanup [%s]: browser open, not logged in. Closing browser only.",
+            run_mode,
+        )
+        LOG.info("Ctrl+C cleanup: closing browser (page, context, browser)...")
+        return
+    LOG.info(
+        "Ctrl+C cleanup [%s]: browser open, logged in. Will close popup if visible, then logout, then close browser.",
+        run_mode,
+    )
+    LOG.info("Ctrl+C cleanup: checking for open popup (CERRAR)...")
+    popup_closed = False
+    try:
+        popup_closed = _dismiss_popup_cerrar_if_visible(page, mapping, sat_ui)
+    except Exception:
+        pass
+    if not popup_closed:
+        LOG.info("Ctrl+C cleanup: no popup visible.")
+    LOG.info("Ctrl+C cleanup: logging out from SAT...")
+    try:
+        if set_timeout_before_logout:
+            page.set_default_timeout(8000)
+        logout_sat(page, mapping)
+        if post_logout_wait_ms:
+            page.wait_for_timeout(post_logout_wait_ms)
+    except Exception as e:
+        LOG.warning("Ctrl+C cleanup: logout failed: %s", e)
+    LOG.info("Ctrl+C cleanup: closing browser (page, context, browser)...")
+
+
+def _dismiss_popup_cerrar_if_visible(page: Page, mapping: dict, sat_ui: dict | None = None) -> bool:
+    """If a popup with CERRAR is visible, click it (e.g. on Ctrl+C when inside a modal). Short timeout to avoid blocking. Returns True if CERRAR was clicked."""
+    sat_ui = sat_ui or DEFAULT_SAT_UI
+    cerrar_pat = _ui_pattern(sat_ui, "popup_cerrar")
+    try:
+        btn = page.get_by_role("button", name=cerrar_pat).first
+        btn.wait_for(state="visible", timeout=2000)
+        btn.click(timeout=2000)
+        LOG.info("Ctrl+C: dismissed popup (CERRAR clicked)")
+        return True
+    except Exception:
+        pass
+    try:
+        for sel in (mapping.get("_popup_cerrar") or []):
+            loc = page.locator(sel).first
+            if loc.is_visible():
+                loc.click(timeout=2000)
+                LOG.info("Ctrl+C: dismissed popup (CERRAR via mapping)")
+                return True
+    except Exception:
+        pass
+    return False
 
 
 def logout_sat(page: Page, mapping: dict) -> None:
@@ -4056,6 +4477,8 @@ def _get_declaration_form_scope(page: Page) -> Page | Frame:
 
 def fill_initial_form(page: Page, data: dict, mapping: dict) -> None:
     """Fill Configuración de la declaración in order: Ejercicio (2022–2026) → Periodicidad → Periodo (Enero–Diciembre, YTD) → Tipo de declaración (Normal / Normal por Corrección Fiscal). Each dropdown may appear after the previous is selected."""
+    LOG.info("")
+    LOG.info("===== Section: Initial form (Configuración de la declaración) =====")
     scope = _get_declaration_form_scope(page)
     page_for_wait = scope.page if isinstance(scope, Frame) else scope
     year = data.get("year")
@@ -4249,11 +4672,22 @@ def run(
     mapping = load_mapping(mapping_path)
     setup_logging(config.get("log_file"))
 
+    _open_wb = None
+    if workbook_path and os.path.isfile(workbook_path):
+        libreoffice_ok = False
+        if config.get("use_libreoffice_recalc", True):
+            libreoffice_ok = recalc_excel_with_libreoffice(workbook_path, config)
+        if not libreoffice_ok:
+            _open_wb = ensure_excel_cache_values(workbook_path)
+        else:
+            LOG.info("Using LibreOffice-cached values; skipping in-memory formula resolution.")
+
     def _on_sigint(_signum, _frame):
         # Do not call Playwright from here (can block). Raise KeyboardInterrupt so main thread
-        # unwinds and the finally block runs (logout_sat, then close browser).
+        # unwinds and the finally block runs: close popup (CERRAR) if visible, then logout, then close browser;
+        # if browser was never opened, the finally that has page never runs and we simply terminate.
         signal.signal(signal.SIGINT, signal.SIG_DFL)  # second Ctrl+C kills immediately
-        print("Ctrl+C: cleaning up (logout, close browser)...", file=sys.stderr)
+        print("Ctrl+C: cleaning up (close popup if open, logout, close browser)...", file=sys.stderr)
         raise KeyboardInterrupt
 
     signal.signal(signal.SIGINT, _on_sigint)
@@ -4274,21 +4708,21 @@ def run(
                     browser = p.chromium.launch(headless=False)
                     context = browser.new_context(accept_downloads=True)
                     page = context.new_page()
-                    _run_context = {"page": page, "mapping": mapping}
+                    _run_context = {"page": page, "mapping": mapping, "logged_in": False, "run_mode": "test_login"}
                     try:
                         login_sat(page, efirma, mapping, base_url, sat_ui)
+                        _run_context["logged_in"] = True
                         LOG.info("Test login: e.firma login completed. Browser will stay open 10s for inspection.")
                         page.wait_for_timeout(10000)
                         return True
                     finally:
+                        need_logout = _run_context.get("logged_in", False) if _run_context else False
+                        run_mode = _run_context.get("run_mode", "?") if _run_context else "?"
                         _run_context = None
                         time.sleep(0.5)  # Let Playwright pending ops settle before close (avoids greenlet thread errors)
-                        LOG.info("Cleanup: logging out from SAT, then closing browser.")
-                        try:
-                            logout_sat(page, mapping)
-                            page.wait_for_timeout(2000)  # Let Cerrar click and navigation complete before closing
-                        except Exception as e:
-                            LOG.warning("Test cleanup logout or wait: %s", e)
+                        _cleanup_on_interrupt(
+                            page, mapping, sat_ui, need_logout, run_mode, post_logout_wait_ms=2000
+                        )
                         try:
                             page.close()
                         except Exception as e:
@@ -4301,6 +4735,8 @@ def run(
                             browser.close()
                         except Exception as e:
                             LOG.debug("Browser close: %s", e)
+                        if sys.exc_info()[0] is KeyboardInterrupt:
+                            os._exit(130)  # Exit immediately; avoid blocking in sync_playwright __exit__
             except Exception as e:
                 LOG.exception("Test login failed")
                 print(str(e), file=sys.stderr)
@@ -4330,10 +4766,11 @@ def run(
                     browser = p.chromium.launch(headless=False)
                     context = browser.new_context(accept_downloads=True)
                     page = context.new_page()
-                    _run_context = {"page": page, "mapping": mapping}
+                    _run_context = {"page": page, "mapping": mapping, "logged_in": False, "run_mode": "test_initial_form"}
                     try:
                         sat_ui = get_sat_ui(config)
                         login_sat(page, efirma, mapping, base_url, sat_ui)
+                        _run_context["logged_in"] = True
                         print()
                         LOG.info("\n")
                         LOG.info("Opening Configuración de la declaración (Presentar declaración)")
@@ -4345,12 +4782,11 @@ def run(
                         page.wait_for_timeout(10000)
                         return True
                     finally:
+                        need_logout = _run_context.get("logged_in", False) if _run_context else False
+                        run_mode = _run_context.get("run_mode", "?") if _run_context else "?"
                         _run_context = None
                         time.sleep(0.5)  # Let Playwright pending ops settle before close (avoids greenlet thread errors)
-                        try:
-                            logout_sat(page, mapping)
-                        except Exception as e:
-                            LOG.debug("Test cleanup logout: %s", e)
+                        _cleanup_on_interrupt(page, mapping, sat_ui, need_logout, run_mode)
                         try:
                             page.close()
                         except Exception as e:
@@ -4363,6 +4799,8 @@ def run(
                             browser.close()
                         except Exception as e:
                             LOG.debug("Browser close: %s", e)
+                        if sys.exc_info()[0] is KeyboardInterrupt:
+                            os._exit(130)  # Exit immediately; avoid blocking in sync_playwright __exit__
             except Exception as e:
                 LOG.exception("Test initial form failed")
                 print(str(e), file=sys.stderr)
@@ -4378,7 +4816,10 @@ def run(
         if not workbook_path:
             raise ValueError("Test full run requires --workbook")
         LOG.info("Test full run: e.firma from config (no DB); initial form from Excel; then phase 3 (ISR Ingresos) + phase 4 (Determinación, ISR retenido) + phase 5 (Pago); no IVA/send")
-        data = read_impuestos(workbook_path)
+        data = read_impuestos(workbook_path, workbook=_open_wb)
+        if _open_wb:
+            _open_wb.close()
+            _open_wb = None
         data["workbook_path"] = workbook_path
         label_map = data["label_map"]
         LOG.info("Period: %s-%s, periodicidad: %s", data.get("year"), data.get("month"), data.get("periodicidad"))
@@ -4392,9 +4833,10 @@ def run(
                     browser = p.chromium.launch(headless=False)
                     context = browser.new_context(accept_downloads=True)
                     page = context.new_page()
-                    _run_context = {"page": page, "mapping": mapping}
+                    _run_context = {"page": page, "mapping": mapping, "logged_in": False, "run_mode": "test_full"}
                     try:
                         login_sat(page, efirma, mapping, base_url, sat_ui)
+                        _run_context["logged_in"] = True
                         LOG.info("Phase 1: Logged in to SAT")
                         print()
                         LOG.info("\n")
@@ -4422,16 +4864,19 @@ def run(
                         run_success = True
                         return True
                     finally:
+                        need_logout = _run_context.get("logged_in", False) if _run_context else False
+                        run_mode = _run_context.get("run_mode", "?") if _run_context else "?"
                         _run_context = None
                         time.sleep(0.5)  # Let Playwright pending ops settle before close (avoids greenlet thread errors)
-                        LOG.info("Cleanup: logging out from SAT, then closing browser.")
-                        try:
-                            page.set_default_timeout(8000)  # Cap cleanup so logout/close don't block 30s+ if element missing
-                            logout_sat(page, mapping)
-                            # Let Cerrar click and navigation complete before closing the browser.
-                            page.wait_for_timeout(2000)
-                        except Exception as e:
-                            LOG.warning("Test cleanup logout or wait: %s", e)
+                        _cleanup_on_interrupt(
+                            page,
+                            mapping,
+                            sat_ui,
+                            need_logout,
+                            run_mode,
+                            post_logout_wait_ms=2000,
+                            set_timeout_before_logout=True,
+                        )
                         try:
                             page.close()
                         except Exception as e:
@@ -4444,6 +4889,8 @@ def run(
                             browser.close()
                         except Exception as e:
                             LOG.debug("Browser close: %s", e)
+                        if sys.exc_info()[0] is KeyboardInterrupt:
+                            os._exit(130)  # Exit immediately; avoid blocking in sync_playwright __exit__
                         # Force process exit so script does not hang (Playwright may leave driver/threads alive)
                         LOG.info("Test full run: closing browser done; exiting process.")
                         os._exit(0 if run_success else 1)
@@ -4462,7 +4909,10 @@ def run(
         if not workbook_path:
             raise ValueError("Test IVA run requires --workbook")
         LOG.info("Test IVA: login + initial form + phase 2→3 (SIGUIENTE, CERRAR) + IVA simplificado de confianza (Determinación); e.firma and data from config/Excel; no ISR/send")
-        data = read_impuestos(workbook_path)
+        data = read_impuestos(workbook_path, workbook=_open_wb)
+        if _open_wb:
+            _open_wb.close()
+            _open_wb = None
         data["workbook_path"] = workbook_path
         LOG.info("Period: %s-%s, periodicidad: %s", data.get("year"), data.get("month"), data.get("periodicidad"))
         efirma = efirma_from_api if (use_api_efirma and efirma_from_api) else get_efirma_from_config(config)
@@ -4474,9 +4924,10 @@ def run(
                     browser = p.chromium.launch(headless=False)
                     context = browser.new_context(accept_downloads=True)
                     page = context.new_page()
-                    _run_context = {"page": page, "mapping": mapping}
+                    _run_context = {"page": page, "mapping": mapping, "logged_in": False, "run_mode": "test_iva"}
                     try:
                         login_sat(page, efirma, mapping, base_url, sat_ui)
+                        _run_context["logged_in"] = True
                         LOG.info("Phase 1: Logged in to SAT")
                         print()
                         LOG.info("\n")
@@ -4500,14 +4951,13 @@ def run(
                         run_success = True
                         return True
                     finally:
+                        need_logout = _run_context.get("logged_in", False) if _run_context else False
+                        run_mode = _run_context.get("run_mode", "?") if _run_context else "?"
                         _run_context = None
                         time.sleep(0.5)
-                        LOG.info("Cleanup: logging out from SAT, then closing browser.")
-                        try:
-                            logout_sat(page, mapping)
-                            page.wait_for_timeout(2000)  # Let Cerrar click and navigation complete before closing
-                        except Exception as e:
-                            LOG.warning("Test cleanup logout or wait: %s", e)
+                        _cleanup_on_interrupt(
+                            page, mapping, sat_ui, need_logout, run_mode, post_logout_wait_ms=2000
+                        )
                         try:
                             page.close()
                         except Exception as e:
@@ -4520,6 +4970,8 @@ def run(
                             browser.close()
                         except Exception as e:
                             LOG.debug("Browser close: %s", e)
+                        if sys.exc_info()[0] is KeyboardInterrupt:
+                            os._exit(130)  # Exit immediately; avoid blocking in sync_playwright __exit__
             except Exception as e:
                 LOG.exception("Test IVA failed")
                 print(str(e), file=sys.stderr)
@@ -4535,7 +4987,10 @@ def run(
         if not workbook_path:
             raise ValueError("Test phase 3 requires --workbook")
         LOG.info("Test phase 3: Phase 1 (login) + Phase 2 (initial form) + Phase 3 (select ISR simplificado, fill ISR section); e.firma from config, data from Excel; no IVA/send")
-        data = read_impuestos(workbook_path)
+        data = read_impuestos(workbook_path, workbook=_open_wb)
+        if _open_wb:
+            _open_wb.close()
+            _open_wb = None
         data["workbook_path"] = workbook_path
         label_map = data["label_map"]
         LOG.info("Period: %s-%s, periodicidad: %s", data.get("year"), data.get("month"), data.get("periodicidad"))
@@ -4548,10 +5003,11 @@ def run(
                     browser = p.chromium.launch(headless=False)
                     context = browser.new_context(accept_downloads=True)
                     page = context.new_page()
-                    _run_context = {"page": page, "mapping": mapping}
+                    _run_context = {"page": page, "mapping": mapping, "logged_in": False, "run_mode": "test_phase3"}
                     try:
                         LOG.info("Phase 1: Logging in to SAT (e.firma)")
                         login_sat(page, efirma, mapping, base_url, sat_ui)
+                        _run_context["logged_in"] = True
                         print()
                         LOG.info("\n")
                         LOG.info("Phase 2: Opening Configuración (Presentar declaración), then filling Ejercicio → Periodicidad → Periodo → Tipo")
@@ -4575,12 +5031,11 @@ def run(
                         page.wait_for_timeout(10000)
                         return True
                     finally:
+                        need_logout = _run_context.get("logged_in", False) if _run_context else False
+                        run_mode = _run_context.get("run_mode", "?") if _run_context else "?"
                         _run_context = None
                         time.sleep(0.5)  # Let Playwright pending ops settle before close (avoids greenlet thread errors)
-                        try:
-                            logout_sat(page, mapping)
-                        except Exception as e:
-                            LOG.debug("Test cleanup logout: %s", e)
+                        _cleanup_on_interrupt(page, mapping, sat_ui, need_logout, run_mode)
                         try:
                             page.close()
                         except Exception as e:
@@ -4593,6 +5048,8 @@ def run(
                             browser.close()
                         except Exception as e:
                             LOG.debug("Browser close: %s", e)
+                        if sys.exc_info()[0] is KeyboardInterrupt:
+                            os._exit(130)  # Exit immediately; avoid blocking in sync_playwright __exit__
             except Exception as e:
                 LOG.exception("Test phase 3 failed")
                 print(str(e), file=sys.stderr)
@@ -4615,7 +5072,10 @@ def run(
     else:
         raise ValueError("Normal run requires (--company-id and --branch-id) or API e.firma (use_api_efirma + efirma_from_api)")
     LOG.info("Reading workbook: %s", workbook_path)
-    data = read_impuestos(workbook_path)
+    data = read_impuestos(workbook_path, workbook=_open_wb)
+    if _open_wb:
+        _open_wb.close()
+        _open_wb = None
     data["workbook_path"] = workbook_path
     label_map = data["label_map"]
     LOG.info("Period: %s-%s, labels read: %d", data.get("year"), data.get("month"), len(label_map))
@@ -4631,9 +5091,10 @@ def run(
                 browser = p.chromium.launch(headless=False)  # headless=False so user can see; set True for automation
                 context = browser.new_context(accept_downloads=True)
                 page = context.new_page()
-                _run_context = {"page": page, "mapping": mapping}
+                _run_context = {"page": page, "mapping": mapping, "logged_in": False, "run_mode": "normal"}
                 try:
                     login_sat(page, efirma, mapping, base_url, sat_ui)
+                    _run_context["logged_in"] = True
                     LOG.info("Phase 1: Logged in to SAT")
                     print()
                     LOG.info("\n")
@@ -4694,10 +5155,18 @@ def run(
                     LOG.info("Declaration send clicked; complete any remaining steps in the browser.")
                     return True
                 finally:
-                    logout_sat(page, mapping)
+                    need_logout = _run_context.get("logged_in", False) if _run_context else False
+                    run_mode = _run_context.get("run_mode", "?") if _run_context else "?"
                     _run_context = None
+                    _cleanup_on_interrupt(page, mapping, sat_ui, need_logout, run_mode)
+                    try:
+                        page.close()
+                    except Exception:
+                        pass
                     context.close()
                     browser.close()
+                    if sys.exc_info()[0] is KeyboardInterrupt:
+                        os._exit(130)  # Exit immediately; avoid blocking in sync_playwright __exit__
         except Exception as e:
             LOG.exception("Error during run")
             print(str(e), file=sys.stderr)
